@@ -1,0 +1,91 @@
+{
+  "result": {
+    "id": "ChIJb7ED4e5ZwokR2ny6aWZw_0c",
+    "name": "Shake Shack 1700 Broadway - 53rd & 7th",
+    "address": "1700 Broadway, New York, NY 10019, USA",
+    "phone": "+1 917-942-6038",
+    "website": "https://www.shakeshack.com/",
+    "map_url": "https://maps.google.com/?cid=5187988880916905178",
+    "lat": 40.7632718,
+    "lng": -73.98214109999999,
+    "rating": 4.2,
+    "review_count": 2495,
+    "categories": [
+      "establishment",
+      "food",
+      "meal_takeaway",
+      "point_of_interest",
+      "restaurant"
+    ],
+    "hours_text": [
+      "Monday: 10:30 AM – 12:00 AM",
+      "Tuesday: 10:30 AM – 12:00 AM",
+      "Wednesday: 10:30 AM – 12:00 AM",
+      "Thursday: 10:30 AM – 12:00 AM",
+      "Friday: 10:30 AM – 12:00 AM",
+      "Saturday: 10:30 AM – 12:00 AM",
+      "Sunday: 10:30 AM – 12:00 AM"
+    ],
+    "open_now": true,
+    "price_level": 2,
+    "business_status": "OPERATIONAL",
+    "cover_photo_url": "https://maps.googleapis.com/maps/api/place/photo?maxwidth=1600&photoreference=ATKogpc5KXu6Giw_K5ayCJgOIdG1YJwLepB23dCoFHrA6v_O0PG8O5tM2Y_9T5SHWMJT1Y1KdFLHIpCpB01afkgp_nupiTqDlKrsqfw2_uxhIh4LQrvUl7xpbBFHMM5se4gRX0aepQgivp_p3OUbycY4YtegYbjWHvRgiDzyRFLaU6MrtGSjwEpRRjCRE3C2u1rxrZIAXX8LdWieYGXix_UDMI_ac2DzKP0WC8-FnUEKC0eS5bDADPXJWUZ_wx896EdXxQPAR1g4E611mvjlzx_NCt0jL0YlCk0APpqlvNiWIAL9BnPjHJgWVlFfYDQt1pctOdkym96pE90quk3Jy3Wbxz_jfbFap8e83wP-8eVS09oxaPhu1JMQv1-DaETkhDZrhqqT2wo74Rk5PadIUuHIoybWvDopkUnUyXcv94YkF33clf2X&key=AIzaSyA0x8k6yCDgYu5yaItTOKWW4S4x5tf8plo",
+    "logo_url_candidates": [
+      "https://www.shakeshack.com/favicon.ico",
+      "https://www.google.com/s2/favicons?domain=www.shakeshack.com",
+      "https://www.google.com/s2/favicons?sz=128&domain=www.shakeshack.com"
+    ],
+    "provider": "google",
+    "raw": {
+      "business_status": "OPERATIONAL",
+      "formatted_address": "1700 Broadway, New York, NY 10019, USA",
+      "formatted_phone_number": "(917) 942-6038",
+      "geometry": {
+        "location": {
+          "lat": 40.7632718,
+          "lng": -73.98214109999999
+        }
+      },
+      "international_phone_number": "+1 917-942-6038",
+      "name": "Shake Shack 1700 Broadway - 53rd & 7th",
+      "opening_hours": {
+        "open_now": true,
+        "weekday_text": [
+          "Monday: 10:30 AM – 12:00 AM",
+          "Tuesday: 10:30 AM – 12:00 AM",
+          "Wednesday: 10:30 AM – 12:00 AM",
+          "Thursday: 10:30 AM – 12:00 AM",
+          "Friday: 10:30 AM – 12:00 AM",
+          "Saturday: 10:30 AM – 12:00 AM",
+          "Sunday: 10:30 AM – 12:00 AM"
+        ]
+      },
+      "photos": [
+        {
+          "height": 2252,
+          "html_attributions": [
+            "<a href=\"https://maps.google.com/maps/contrib/113874302526634426422\">Devin Tai</a>"
+          ],
+          "photo_reference": "ATKogpc5KXu6Giw_K5ayCJgOIdG1YJwLepB23dCoFHrA6v_O0PG8O5tM2Y_9T5SHWMJT1Y1KdFLHIpCpB01afkgp_nupiTqDlKrsqfw2_uxhIh4LQrvUl7xpbBFHMM5se4gRX0aepQgivp_p3OUbycY4YtegYbjWHvRgiDzyRFLaU6MrtGSjwEpRRjCRE3C2u1rxrZIAXX8LdWieYGXix_UDMI_ac2DzKP0WC8-FnUEKC0eS5bDADPXJWUZ_wx896EdXxQPAR1g4E611mvjlzx_NCt0jL0YlCk0APpqlvNiWIAL9BnPjHJgWVlFfYDQt1pctOdkym96pE90quk3Jy3Wbxz_jfbFap8e83wP-8eVS09oxaPhu1JMQv1-DaETkhDZrhqqT2wo74Rk5PadIUuHIoybWvDopkUnUyXcv94YkF33clf2X",
+          "width": 4000
+        }
+        // ... (other photo objects omitted for brevity)
+      ],
+      "place_id": "ChIJb7ED4e5ZwokR2ny6aWZw_0c",
+      "price_level": 2,
+      "rating": 4.2,
+      "types": [
+        "establishment",
+        "food",
+        "meal_takeaway",
+        "point_of_interest",
+        "restaurant"
+      ],
+      "url": "https://maps.google.com/?cid=5187988880916905178",
+      "user_ratings_total": 2495,
+      "website": "https://www.shakeshack.com/location/1700-broadway-53rd-7th-ny?utm_source=google&utm_medium=listing"
+    },
+    "chain_count_nearby": 0,
+    "is_chain_nearby": false
+  }
+}

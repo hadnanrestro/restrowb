@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Restronaut-style Search</title>
+<style>
+  :root{
+    --bg:#0b0c10; --panel:#111218; --ink:#e6e7eb; --muted:#9aa0a6; --line:#23252f; --accent:#6aa5ff;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:40px; background:var(--bg); color:var(--ink); font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  }
+  .wrap{max-width:720px; margin:0 auto}
+  .header{display:flex; align-items:center; gap:12px; margin-bottom:12px}
+  .provider, .locbtn{
+    background:var(--panel); color:var(--ink); border:1px solid var(--line);
+    padding:8px 10px; border-radius:10px;
+  }
+  .search{
+    position:relative; width:100%;
+    background:var(--panel); border:1px solid var(--accent);
+    border-radius:10px; padding:12px 14px;
+    outline:none; color:var(--ink);
+  }
+  .search::placeholder{color:var(--muted)}
+  .suggest{
+    position:absolute; top:100%; left:0; right:0; margin-top:6px; background:var(--panel);
+    border:1px solid var(--line); border-radius:10px; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,.35); z-index:20;
+  }
+  .item{
+    padding:10px 12px; cursor:pointer; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:10px;
+  }
+  .item:last-child{border-bottom:none}
+  .item:hover,.item.active{background:#171925}
+  .title{font-weight:600}
+  .subtitle{color:var(--muted); font-size:14px}
+  .badge{font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:2px 8px}
+  .loading, .error{margin-top:10px; color:var(--muted); font-size:14px}
+  .error{color:#ff8a8a}
+  .details{
+    margin-top:18px; background:var(--panel); border:1px solid var(--line);
+    border-radius:14px; padding:16px; display:none;
+  }
+  .dl-row{display:flex; gap:10px; margin:4px 0}
+  .dl-label{min-width:90px; color:var(--muted)}
+  a{color:var(--accent); text-decoration:none}
+  a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <select id="provider" class="provider" title="Provider">
+      <option value="google">Google Places</option>
+      <option value="yelp" selected>Yelp Fusion</option>
+    </select>
+    <button id="locbtn" class="locbtn" type="button">Use my location: OFF</button>
+    <span class="badge">limit=10</span>
+  </div>
+
+  <div style="position:relative;">
+    <input id="q" class="search" placeholder="Search restaurants..." autocomplete="off"/>
+    <div id="suggest" class="suggest" style="display:none;"></div>
+  </div>
+
+  <div id="loading" class="loading" style="display:none;">Searching…</div>
+  <div id="error" class="error" style="display:none;"></div>
+
+  <div id="details" class="details">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+      <div>
+        <div id="d-name" style="font-size:20px; font-weight:700;"></div>
+        <div id="d-provider" class="badge" style="margin-top:6px;"></div>
+      </div>
+      <div id="d-rating" class="badge"></div>
+    </div>
+    <div class="dl-row"><div class="dl-label">Address</div><div id="d-addr"></div></div>
+    <div class="dl-row"><div class="dl-label">Phone</div><div id="d-phone"></div></div>
+    <div class="dl-row"><div class="dl-label">Website</div><div id="d-web"></div></div>
+    <div class="dl-row"><div class="dl-label">Map</div><div id="d-map"></div></div>
+  </div>
+</div>
+
+<script>
+const BACKEND_BASE   = "http://localhost:8000";
+const BACKEND_API_KEY= "supersecret123";
+
+const $q = document.getElementById("q");
+const $provider = document.getElementById("provider");
+const $suggest = document.getElementById("suggest");
+const $loading = document.getElementById("loading");
+const $error = document.getElementById("error");
+const $details = document.getElementById("details");
+const $dName = document.getElementById("d-name");
+const $dProv = document.getElementById("d-provider");
+const $dAddr = document.getElementById("d-addr");
+const $dPhone= document.getElementById("d-phone");
+const $dWeb  = document.getElementById("d-web");
+const $dMap  = document.getElementById("d-map");
+const $dRating = document.getElementById("d-rating");
+const $locbtn = document.getElementById("locbtn");
+
+let aborter = null;
+let activeIndex = -1;
+let geo = {enabled:false, lat:null, lng:null};
+
+function show(el){ el.style.display = ""; }
+function hide(el){ el.style.display = "none"; }
+
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+}
+
+function showError(msg){
+  $error.textContent = msg;
+  show($error);
+  setTimeout(() => hide($error), 5000);
+}
+
+async function fetchJSON(url){
+  if (aborter) aborter.abort();
+  aborter = new AbortController();
+  const res = await fetch(url, {
+    signal: aborter.signal,
+    headers: { "X-API-Key": BACKEND_API_KEY }
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function renderSuggestions(list){
+  $suggest.innerHTML = "";
+  if (!list || list.length === 0){ hide($suggest); return; }
+  list.forEach((item, idx) => {
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = `
+      <div style="flex:1">
+        <div class="title">${escapeHTML(item.title)}</div>
+        ${item.subtitle ? `<div class="subtitle">${escapeHTML(item.subtitle)}</div>` : ""}
+      </div>
+      <div class="badge">${item.provider}</div>
+    `;
+    row.addEventListener("mouseenter", () => setActive(idx));
+    row.addEventListener("click", () => pickItem(item));
+    $suggest.appendChild(row);
+  });
+  activeIndex = -1;
+  show($suggest);
+}
+
+function setActive(idx){
+  const rows = [...$suggest.children];
+  rows.forEach(r => r.classList.remove("active"));
+  if (idx >=0 && idx < rows.length){
+    rows[idx].classList.add("active");
+    activeIndex = idx;
+  }
+}
+
+function renderDetails(r = {}){
+  $dName.textContent = r.name || "—";
+  $dProv.textContent = r.provider || "—";
+  $dAddr.textContent = r.address || "—";
+  $dPhone.textContent = r.phone || "—";
+  $dRating.textContent = r.rating ? `★ ${r.rating} (${r.review_count ?? "?"})` : "No rating";
+  $dWeb.innerHTML = r.website ? `<a href="${r.website}" target="_blank" rel="noopener">${r.website}</a>` : "—";
+
+  let mapLink = r.map_url;
+  if (!mapLink && r.lat != null && r.lng != null) {
+    mapLink = `https://www.google.com/maps?q=${r.lat},${r.lng}`;
+  }
+  $dMap.innerHTML = mapLink ? `<a href="${mapLink}" target="_blank" rel="noopener">Open map</a>` : "—";
+
+  show($details);
+  $details.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function pickItem(item){
+  $q.value = item.title;
+  hide($suggest);
+  try{
+    const u = new URL(`${BACKEND_BASE}/details`);
+    u.searchParams.set("id", item.id);
+    u.searchParams.set("provider", item.provider);
+    const data = await fetchJSON(u.toString());
+    const r = data.result || data || {};
+    renderDetails(r);
+  }catch(err){
+    console.error(err);
+    showError("Failed to load details");
+  }
+}
+
+function debounce(fn, ms=250){
+  let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args),ms); };
+}
+
+const doSearch = debounce(async ()=>{
+  const q = $q.value.trim();
+  hide($error);
+  if (!q){ hide($suggest); return; }
+
+  const u = new URL(`${BACKEND_BASE}/suggest`);
+  u.searchParams.set("q", q);
+  u.searchParams.set("provider", $provider.value);
+  u.searchParams.set("limit", "10");
+  if (geo.enabled && geo.lat != null && geo.lng != null) {
+    u.searchParams.set("lat", String(geo.lat));
+    u.searchParams.set("lng", String(geo.lng));
+  }
+
+  try{
+    show($loading);
+    const data = await fetchJSON(u.toString());
+    renderSuggestions(data.results || []);
+  }catch(err){
+    console.error(err);
+    showError("Search failed");
+  }finally{
+    hide($loading);
+  }
+}, 200);
+
+$q.addEventListener("input", doSearch);
+
+$q.addEventListener("keydown", (e)=>{
+  const rows = [...$suggest.children];
+  if (!rows.length) return;
+  if (e.key === "ArrowDown"){ e.preventDefault(); setActive(Math.min(activeIndex+1, rows.length-1)); }
+  if (e.key === "ArrowUp"){ e.preventDefault(); setActive(Math.max(activeIndex-1, 0)); }
+  if (e.key === "Enter" && activeIndex >= 0){ e.preventDefault(); rows[activeIndex].click(); }
+  if (e.key === "Escape"){ hide($suggest); }
+});
+
+document.addEventListener("click", (e)=>{
+  if (!e.target.closest(".search") && !e.target.closest(".suggest")){
+    hide($suggest);
+  }
+});
+
+$locbtn.addEventListener("click", async ()=>{
+  if (!geo.enabled){
+    if (!navigator.geolocation){
+      showError("Geolocation not supported");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        geo = {enabled:true, lat: pos.coords.latitude, lng: pos.coords.longitude};
+        $locbtn.textContent = "Use my location: ON";
+        doSearch();
+      },
+      err => showError("Location denied"),
+      { enableHighAccuracy:false, maximumAge:60000, timeout:8000 }
+    );
+  } else {
+    geo = {enabled:false, lat:null, lng:null};
+    $locbtn.textContent = "Use my location: OFF";
+    doSearch();
+  }
+});
+</script>
+</body>
+</html>
