@@ -21,7 +21,12 @@ load_dotenv()
 GOOGLE_API_KEY  = os.getenv("GOOGLE_PLACES_API_KEY", "")
 YELP_API_KEY    = os.getenv("YELP_API_KEY", "")  # optional fallback
 
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+ALLOWED_ORIGINS= [
+    "*", 
+    "http://localhost:5173", 
+    "https://restrowb.onrender.com", 
+    "https://zp1v56uxy8rdx5ypatb0ockcb9tr6a-oci3--5173--96435430.local-credentialless.webcontainer-api.io/"
+]
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
 
 RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "60"))
@@ -35,7 +40,79 @@ GOOGLE_CSE_CX  = os.getenv("GOOGLE_CSE_CX", "")
 
 # Logging
 log = logging.getLogger("uvicorn.error")
+# Responsive container utility (used everywhere for consistent layout)
+CONTAINER = "mx-auto max-w-[1400px] xl:max-w-[1600px] px-4 sm:px-6 lg:px-8"
+## Core Clean Restaurant Ambiance Images (Interior/Exterior) 
+U1 = "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?q=80&w=1600&auto=format&fit=crop" # Modern clean restaurant interior
+U2 = "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?q=80&w=1600&auto=format&fit=crop" # Bright restaurant interior 
+U3 = "https://images.unsplash.com/photo-1590846406792-0adc7f938f1d?q=80&w=1600&auto=format&fit=crop" # Clean dining space
+U4 = "https://images.unsplash.com/photo-1551218808-94e220e084d2?q=80&w=1600&auto=format&fit=crop" # Minimalist restaurant
+U5 = "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?q=80&w=1600&auto=format&fit=crop" # Clean kitchen/dining view
+#U6 = "https://images.unsplash.com/photo-1571997478779-2adcbbe9ab2f?q=80&w=1600&auto=format&fit=crop" # Clean restaurant exterior
+U7 = "https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?q=80&w=1600&auto=format&fit=crop" # Clean bar/dining area
+U8 = "https://images.unsplash.com/photo-1559339352-11d035aa65de?q=80&w=1600&auto=format&fit=crop" # Bright restaurant atmosphere
 
+## American/Burger Cuisine - Clean Modern Ambiance
+U9 = "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?q=80&w=1600&auto=format&fit=crop" # Clean modern diner
+U10 = "https://images.unsplash.com/photo-1533777857889-4be7c70b33f7?q=80&w=1600&auto=format&fit=crop" # Minimal burger restaurant
+#U11 = "https://images.unsplash.com/photo-1559329007-40df8dd8534d?q=80&w=1600&auto=format&fit=crop" # Bright modern casual dining interior
+U12 = "https://images.unsplash.com/photo-1424847651672-bf20a4b0982b?q=80&w=1600&auto=format&fit=crop" # Clean modern restaurant interior
+
+## Italian Cuisine - Clean Elegant Ambiance  
+U13 = "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?q=80&w=1600&auto=format&fit=crop" # Clean fine dining setup
+U14 = "https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?q=80&w=1600&auto=format&fit=crop" # Minimalist Italian style
+U15 = "https://images.unsplash.com/photo-1578985545062-69928b1d9587?q=80&w=1600&auto=format&fit=crop" # Modern clean restaurant
+U16 = "https://images.unsplash.com/photo-1555992336-03a23c7b7887?q=80&w=1600&auto=format&fit=crop" # Clean trattoria style
+
+## Mexican Cuisine - Bright Clean Ambiance
+U17 = "https://images.unsplash.com/photo-1578662996442-48f60103fc96?q=80&w=1600&auto=format&fit=crop" # Clean Mexican restaurant
+U18 = "https://images.unsplash.com/photo-1585032226651-759b368d7246?q=80&w=1600&auto=format&fit=crop" # Bright modern cantina
+U19 = "https://images.unsplash.com/photo-1511690743698-d9d85f2fbf38?q=80&w=1600&auto=format&fit=crop" # Clean colorful setting
+U20 = "https://images.unsplash.com/photo-1559627021-1b0a96c1e0cf?q=80&w=1600&auto=format&fit=crop" # Modern Mexican interior
+
+## Asian Cuisine - Clean Modern Ambiance (Chinese/Japanese/Thai/Korean/Vietnamese)
+U21 = "https://images.unsplash.com/photo-1537047902294-62a40c20a6ae?q=80&w=1600&auto=format&fit=crop" # Clean Asian restaurant
+U22 = "https://images.unsplash.com/photo-1514933651103-005eec06c04b?q=80&w=1600&auto=format&fit=crop" # Minimal Japanese style
+U23 = "https://images.unsplash.com/photo-1555742535-4b3dff5c7a66?q=80&w=1600&auto=format&fit=crop" # Clean Asian dining
+U24 = "https://images.unsplash.com/photo-1571003123894-1f0594d2b5d9?q=80&w=1600&auto=format&fit=crop" # Modern Asian interior
+
+## BBQ/Grill - Clean Modern Barbecue Ambiance  
+U25 = "https://images.unsplash.com/photo-1550966871-3ed3cdb5ed0c?q=80&w=1600&auto=format&fit=crop" # Clean BBQ restaurant
+U26 = "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?q=80&w=1600&auto=format&fit=crop" # Modern grill house
+U27 = "https://images.unsplash.com/photo-1564069114553-7215e1ff1890?q=80&w=1600&auto=format&fit=crop" # Clean smokehouse style
+U28 = "https://images.unsplash.com/photo-1590846406792-0adc7f938f1d?q=80&w=1600&auto=format&fit=crop" # Minimal BBQ interior
+
+## Mediterranean/Greek/Indian - Clean Elegant Ambiance
+U29 = "https://images.unsplash.com/photo-1578985545062-69928b1d9587?q=80&w=1600&auto=format&fit=crop" # Clean Mediterranean
+U30 = "https://images.unsplash.com/photo-1571003123894-1f0594d2b5d9?q=80&w=1600&auto=format&fit=crop" # Modern ethnic restaurant
+U31 = "https://images.unsplash.com/photo-1555742535-4b3dff5c7a66?q=80&w=1600&auto=format&fit=crop" # Clean traditional style
+U32 = "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?q=80&w=1600&auto=format&fit=crop" # Bright ethnic dining
+
+## French Cuisine - Elegant Clean Ambiance
+U33 = "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?q=80&w=1600&auto=format&fit=crop" # Clean French bistro
+U34 = "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?q=80&w=1600&auto=format&fit=crop" # Elegant clean dining
+U35 = "https://images.unsplash.com/photo-1590846406792-0adc7f938f1d?q=80&w=1600&auto=format&fit=crop" # Modern French style
+U36 = "https://images.unsplash.com/photo-1578985545062-69928b1d9587?q=80&w=1600&auto=format&fit=crop" # Clean fine dining
+
+# Cuisine-specific hero image sets (4 clean images each, perfect for white theme)
+HERO_BY_CUISINE = {
+    "burger": [U9, U10, U25, U12],          # Clean modern diner/burger vibes
+    "italian": [U13, U14, U15, U16],        # Clean Italian elegant dining  
+    "mexican": [U17, U18, U19, U20],        # Bright clean Mexican settings
+    "bbq": [U25, U26, U27, U28],            # Clean modern BBQ atmosphere
+    "american": [U1, U9, U25, U2],          # Classic clean American dining
+    "chinese": [U21, U23, U24, U5],         # Clean Asian restaurant ambiance
+    "japanese": [U22, U21, U23, U24],       # Minimal Japanese/Asian style
+    "thai": [U21, U24, U23, U4],            # Clean Thai/Asian restaurant 
+    "indian": [U30, U31, U32, U7],          # Clean Indian restaurant decor
+    "greek": [U29, U31, U32, U2],           # Clean Greek/Mediterranean
+    "french": [U33, U34, U35, U36],         # Elegant clean French dining
+    "korean": [U24, U21, U23, U22],         # Clean modern Korean/Asian
+    "mediterranean": [U29, U31, U32, U35],  # Clean Mediterranean vibes
+    "vietnamese": [U21, U22, U24, U23],     # Clean Vietnamese/Asian fusion
+}
+# Safe, generic hero fallback if one of the hero URLs fails
+HERO_FALLBACK_URL = "https://source.unsplash.com/1600x900/?restaurant,interior"
 # ────────────────────────────────────────────────────────────────────────────
 # App & shared HTTP client (lifespan)
 # ────────────────────────────────────────────────────────────────────────────
@@ -257,121 +334,219 @@ async def google_image_search(q: str, *, num: int = 3) -> Optional[str]:
     IMGSEARCH_CACHE.set(key, None)
     return None
 
+async def ensure_valid_image_url(url: str) -> str:
+    """Ensure image URL is valid and accessible"""
+    if not url or not url.startswith(('http://', 'https://')):
+        return ""
+    
+    # Quick HEAD request to verify image exists
+    try:
+        resp = await app.state.http.head(url, timeout=3.0)
+        if resp.status_code == 200:
+            content_type = resp.headers.get('content-type', '').lower()
+            if content_type.startswith('image/'):
+                return url
+    except Exception:
+        pass
+    
+    return ""
+  
+  
 # ────────────────────────────────────────────────────────────────────────────
 # Cuisine → curated assets (hero + menu)
 # ────────────────────────────────────────────────────────────────────────────
 CUISINE_ASSETS: Dict[str, Dict[str, Any]] = {
     "burger": {
         "palette": {"primary":"#FF7C4D","primary_dark":"#D9653D"},
-        "hero": [
-            unsplash("photo-1551183053-bf91a1d81141"),
-            unsplash("photo-1551782450-17144c3a380e"),
-            unsplash("photo-1504754524776-8f4f37790ca0"),
-            unsplash("photo-1550547660-d9450f859349"),
-        ],
+        "hero": HERO_BY_CUISINE["burger"],
         "menu": [
-            {"name":"Double Smash Burger","desc":"American cheese, pickles, shack sauce","price":"$10.99","img": "gq:double smash burger"},
-            {"name":"Crispy Chicken Sandwich","desc":"Buttermilk fried chicken, slaw","price":"$8.99","img": "gq:crispy chicken sandwich"},
-            {"name":"Crinkle Cut Fries","desc":"Sea salt, extra crispy","price":"$3.99","img": "gq:crinkle cut fries"},
+            {"name":"Double Smash Burger","desc":"American cheese, pickles, shack sauce","price":"$10.99","img": "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Crispy Chicken Sandwich","desc":"Buttermilk fried chicken, slaw","price":"$8.99","img": "https://images.unsplash.com/photo-1606755962773-d324e2dabd17?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Crinkle Cut Fries","desc":"Sea salt, extra crispy","price":"$3.99","img": "https://images.unsplash.com/photo-1576107232684-1279f390859f?q=80&w=1200&auto=format&fit=crop"}
         ],
-        "fallback": "",
+        "fallback": ""
     },
     "italian": {
         "palette": {"primary":"#CF3A2B","primary_dark":"#A82E22"},
-        "hero": [
-            unsplash("photo-1525755662778-989d0524087e"),
-            unsplash("photo-1513104890138-7c749659a591"),
-            unsplash("photo-1523986371872-9d3ba2e2f5fd"),
-            unsplash("photo-1540189549336-e6e99c3679fe"),
-        ],
+        "hero": HERO_BY_CUISINE["italian"],
         "menu": [
-            {"name":"Chicken Alfredo","desc":"Creamy parmesan sauce, fettuccine","price":"$14.99","img": "gq:chicken alfredo pasta"},
-            {"name":"Spaghetti & Meatballs","desc":"San Marzano tomatoes, basil","price":"$12.99","img": "gq:spaghetti and meatballs"},
-            {"name":"Margherita Pizza","desc":"Fresh mozzarella, tomato, basil","price":"$11.49","img": "gq:margherita pizza"},
+            {"name":"Chicken Alfredo","desc":"Creamy parmesan sauce, fettuccine","price":"$14.99","img": "https://images.unsplash.com/photo-1621996346565-e3dbc353d2e5?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Spaghetti & Meatballs","desc":"San Marzano tomatoes, basil","price":"$12.99","img": "https://images.unsplash.com/photo-1551183053-bf91a1d81141?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Margherita Pizza","desc":"Fresh mozzarella, tomato, basil","price":"$11.49","img": "https://images.unsplash.com/photo-1604382354936-07c5d9983bd3?q=80&w=1200&auto=format&fit=crop"}
         ],
-        "fallback": "",
+        "fallback": ""
     },
     "mexican": {
         "palette": {"primary":"#EA7A28","primary_dark":"#BE621F"},
-        "hero": [
-            unsplash("photo-1543352634-8732c721c8e7"),
-            unsplash("photo-1552332386-f8dd00dc2f85"),
-            unsplash("photo-1590080876475-34c4f3f2d7b7"),
-            unsplash("photo-1617195737498-7f5d8dfe8f3f"),
-        ],
+        "hero": HERO_BY_CUISINE["mexican"],
         "menu": [
-            {"name":"Carne Asada Tacos","desc":"Cilantro, onions, lime","price":"$9.49","img": "gq:carne asada tacos"},
-            {"name":"Chicken Quesadilla","desc":"Three-cheese blend, pico","price":"$8.99","img": "gq:chicken quesadilla"},
-            {"name":"Chips & Guacamole","desc":"House-made","price":"$5.99","img": "gq:chips and guacamole"},
+            {"name":"Carne Asada Tacos","desc":"Cilantro, onions, lime","price":"$9.49","img": "https://images.unsplash.com/photo-1565299585323-38174c267b34?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Chicken Quesadilla","desc":"Three-cheese blend, pico","price":"$8.99","img": "https://images.unsplash.com/photo-1618040996337-56904b7850b9?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Chips & Guacamole","desc":"House-made","price":"$5.99","img": "https://images.unsplash.com/photo-1541544741938-0af808871cc0?q=80&w=1200&auto=format&fit=crop"}
         ],
-        "fallback": "",
+        "fallback": ""
     },
     "bbq": {
         "palette": {"primary":"#9B4F2A","primary_dark":"#7B3F22"},
-        "hero": [
-            unsplash("photo-1558030006-450675c69ddf"),
-            unsplash("photo-1544025162-d76694265947"),
-            unsplash("photo-1514517220033-e6d36f4a0a76"),
-            unsplash("photo-1523987355523-c7b5b92adce3"),
-        ],
+        "hero": HERO_BY_CUISINE["bbq"],
         "menu": [
-            {"name":"Smoked Brisket Plate","desc":"Pickles, onions, white bread","price":"$15.99","img": "gq:texas smoked brisket plate"},
-            {"name":"Pork Ribs (Half Rack)","desc":"House rub, sticky glaze","price":"$16.49","img": "gq:pork ribs barbecue"},
-            {"name":"Mac & Cheese","desc":"Three-cheese blend","price":"$5.99","img": "gq:mac and cheese bowl"},
+            {"name":"Smoked Brisket Plate","desc":"Pickles, onions, white bread","price":"$15.99","img": "https://images.unsplash.com/photo-1544025162-d76694265947?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Pork Ribs (Half Rack)","desc":"House rub, sticky glaze","price":"$16.49","img": "https://images.unsplash.com/photo-1558030006-450675393462?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Mac & Cheese","desc":"Three-cheese blend","price":"$5.99","img": "https://images.unsplash.com/photo-1571197119282-7c4e04cc3f2e?q=80&w=1200&auto=format&fit=crop"}
         ],
-        "fallback": "",
+        "fallback": ""
     },
     "american": {
         "palette": {"primary":"#F28C3A","primary_dark":"#C6732F"},
-        "hero": [
-            unsplash("photo-1551183053-bf91a1d81141"),
-            unsplash("photo-1553621042-f6e147245754"),
-            unsplash("photo-1504754524776-8f4f37790ca0"),
-            unsplash("photo-1550547660-d9450f859349"),
-        ],
+        "hero": HERO_BY_CUISINE["american"],
         "menu": [
-            {"name":"Roast Chicken Plate","desc":"Choice of two sides","price":"$10.99","img": "gq:roast chicken plate"},
-            {"name":"Country Fried Steak","desc":"Pepper gravy, mashed potatoes","price":"$11.49","img": "gq:country fried steak with gravy"},
-            {"name":"Vegetable Plate","desc":"Pick any three sides","price":"$8.99","img": "gq:vegetable plate southern sides"},
+            {"name":"Roast Chicken Plate","desc":"Choice of two sides","price":"$10.99","img": "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Country Fried Steak","desc":"Pepper gravy, mashed potatoes","price":"$11.49","img": "https://images.unsplash.com/photo-1562967916-eb82221dfb92?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Vegetable Plate","desc":"Pick any three sides","price":"$8.99","img": "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?q=80&w=1200&auto=format&fit=crop"}
         ],
-        "fallback": "",
+        "fallback": ""
     },
+    "chinese": {
+        "palette": {"primary":"#DC2626","primary_dark":"#B91C1C"},
+        "hero": HERO_BY_CUISINE["chinese"],
+        "menu": [
+            {"name":"General Tso's Chicken","desc":"Sweet and spicy with steamed rice","price":"$12.99","img": "https://images.unsplash.com/photo-1525755662778-989d0524087e?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Beef Lo Mein","desc":"Soft noodles with vegetables","price":"$11.49","img": "https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Pork Dumplings","desc":"Pan-fried, served with soy sauce","price":"$7.99","img": "https://images.unsplash.com/photo-1563379091339-03246963d96c?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    },
+    "japanese": {
+        "palette": {"primary":"#7C3AED","primary_dark":"#6D28D9"},
+        "hero": HERO_BY_CUISINE["japanese"],
+        "menu": [
+            {"name":"Salmon Teriyaki","desc":"Grilled with steamed vegetables","price":"$16.99","img": "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"California Roll","desc":"Crab, avocado, cucumber","price":"$8.99","img": "https://images.unsplash.com/photo-1553621042-f6e147245754?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Chicken Ramen","desc":"Rich broth with soft-boiled egg","price":"$13.49","img": "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    },
+    "thai": {
+        "palette": {"primary":"#F59E0B","primary_dark":"#D97706"},
+        "hero": HERO_BY_CUISINE["thai"],
+        "menu": [
+            {"name":"Pad Thai","desc":"Rice noodles, shrimp, bean sprouts","price":"$12.99","img": "https://images.unsplash.com/photo-1559847844-5315695dadae?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Green Curry","desc":"Coconut milk, basil, jasmine rice","price":"$13.49","img": "https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Tom Yum Soup","desc":"Spicy and sour with prawns","price":"$9.99","img": "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    },
+    "indian": {
+        "palette": {"primary":"#EF4444","primary_dark":"#DC2626"},
+        "hero": HERO_BY_CUISINE["indian"],
+        "menu": [
+            {"name":"Chicken Tikka Masala","desc":"Creamy tomato sauce, basmati rice","price":"$14.99","img": "https://images.unsplash.com/photo-1585937421612-70a008356fbe?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Lamb Biryani","desc":"Fragrant basmati rice, spices","price":"$16.99","img": "https://images.unsplash.com/photo-1563379091339-03246963d96c?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Garlic Naan","desc":"Fresh baked bread","price":"$3.99","img": "https://images.unsplash.com/photo-1601050690597-df0568f70950?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    },
+    "greek": {
+        "palette": {"primary":"#3B82F6","primary_dark":"#2563EB"},
+        "hero": HERO_BY_CUISINE["greek"],
+        "menu": [
+            {"name":"Gyro Platter","desc":"Lamb and beef, tzatziki, pita","price":"$13.99","img": "https://images.unsplash.com/photo-1529692236671-f1f6cf9683ba?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Greek Salad","desc":"Feta, olives, tomatoes, cucumbers","price":"$9.99","img": "https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Spanakopita","desc":"Spinach and feta phyllo pastry","price":"$7.99","img": "https://images.unsplash.com/photo-1551218808-94e220e084d2?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    },
+    "french": {
+        "palette": {"primary":"#6366F1","primary_dark":"#4F46E5"},
+        "hero": HERO_BY_CUISINE["french"],
+        "menu": [
+            {"name":"Coq au Vin","desc":"Braised chicken in red wine","price":"$18.99","img": "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"French Onion Soup","desc":"Gruyere cheese, baguette croutons","price":"$8.99","img": "https://images.unsplash.com/photo-1547592166-23ac45744acd?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Croque Monsieur","desc":"Ham and cheese sandwich, bechamel","price":"$11.99","img": "https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    },
+    "korean": {
+        "palette": {"primary":"#EF4444","primary_dark":"#DC2626"},
+        "hero": HERO_BY_CUISINE["korean"],
+        "menu": [
+            {"name":"Korean BBQ Bowl","desc":"Bulgogi beef, kimchi, steamed rice","price":"$14.99","img": "https://images.unsplash.com/photo-1498654896293-37aacf113fd9?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Bibimbap","desc":"Mixed vegetables, egg, gochujang","price":"$12.99","img": "https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Korean Fried Chicken","desc":"Crispy wings, sweet chili glaze","price":"$11.99","img": "https://images.unsplash.com/photo-1606755962773-d324e2dabd17?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    },
+    "mediterranean": {
+        "palette": {"primary":"#10B981","primary_dark":"#059669"},
+        "hero": HERO_BY_CUISINE["mediterranean"],
+        "menu": [
+            {"name":"Mediterranean Bowl","desc":"Hummus, tabbouleh, grilled chicken","price":"$13.99","img": "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Grilled Sea Bass","desc":"Lemon, herbs, roasted vegetables","price":"$19.99","img": "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Falafel Wrap","desc":"Tahini sauce, fresh vegetables","price":"$9.99","img": "https://images.unsplash.com/photo-1529692236671-f1f6cf9683ba?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    },
+    "vietnamese": {
+        "palette": {"primary":"#16A34A","primary_dark":"#15803D"},
+        "hero": HERO_BY_CUISINE["vietnamese"],
+        "menu": [
+            {"name":"Pho Bo","desc":"Beef noodle soup, fresh herbs","price":"$11.99","img": "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Banh Mi","desc":"Vietnamese sandwich, pickled vegetables","price":"$8.99","img": "https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=1200&auto=format&fit=crop"},
+            {"name":"Spring Rolls","desc":"Fresh vegetables, peanut dipping sauce","price":"$6.99","img": "https://images.unsplash.com/photo-1563379091339-03246963d96c?q=80&w=1200&auto=format&fit=crop"}
+        ],
+        "fallback": ""
+    }
 }
 DEFAULT_CUISINE = "american"
 
 def cuisine_from_types(details: Dict[str, Any]) -> str:
     name = (details.get("name") or "").lower()
     types = [t.lower() for t in (details.get("categories") or [])]
-    if any(t in types for t in ["hamburger_restaurant","fast_food","burger","american_restaurant"]): return "burger"
-    if any(t in types for t in ["italian_restaurant","pizzeria"]): return "italian"
-    if any(t in types for t in ["mexican_restaurant","taco_restaurant"]): return "mexican"
-    if any(t in types for t in ["barbecue_restaurant"]): return "bbq"
-    if "pizza" in name: return "italian"
-    if "burger" in name: return "burger"
-    if "bbq" in name or "bar-b-que" in name: return "bbq"
-    if "taco" in name: return "mexican"
+    
+    # More comprehensive cuisine detection
+    cuisine_keywords = {
+        "burger": ["hamburger_restaurant", "fast_food", "burger", "american_restaurant", "sandwich_shop"],
+        "italian": ["italian_restaurant", "pizzeria", "pizza_place", "pasta_restaurant"],
+        "mexican": ["mexican_restaurant", "taco_restaurant", "tex_mex_restaurant", "burrito_restaurant", "latin_american_restaurant"],
+        "bbq": ["barbecue_restaurant", "smokehouse", "grill"],
+        "chinese": ["chinese_restaurant", "asian_restaurant"],
+        "japanese": ["japanese_restaurant", "sushi_restaurant", "ramen_restaurant"],
+        "indian": ["indian_restaurant", "curry_restaurant"],
+        "thai": ["thai_restaurant"],
+        "mediterranean": ["mediterranean_restaurant", "greek_restaurant", "middle_eastern_restaurant"]
+    }
+    
+    # Check categories first
+    for cuisine, keywords in cuisine_keywords.items():
+        if any(keyword in types for keyword in keywords):
+            return cuisine
+    
+    # Check name for keywords
+    name_keywords = {
+        "burger": ["burger", "burgers", "grill", "bbq", "bar-b-que"],
+        "italian": ["pizza", "pizzeria", "italian", "pasta", "trattoria", "ristorante"],
+        "mexican": ["taco", "tacos", "mexican", "cantina", "casa", "el ", "la "],
+        "bbq": ["bbq", "bar-b-que", "barbecue", "smokehouse", "pit"],
+        "chinese": ["chinese", "china", "wok", "dragon", "golden", "panda"],
+        "japanese": ["sushi", "ramen", "japanese", "tokyo", "sakura"],
+        "indian": ["indian", "curry", "tandoor", "masala"],
+        "thai": ["thai", "pad", "bangkok"],
+        "mediterranean": ["mediterranean", "greek", "gyro", "kebab", "falafel"]
+    }
+    
+    for cuisine, keywords in name_keywords.items():
+        if any(keyword in name for keyword in keywords):
+            return cuisine
+    
     return DEFAULT_CUISINE
 
 async def resolve_menu_images_with_google(details: Dict[str, Any]) -> None:
     cuisine = cuisine_from_types(details)
     assets = CUISINE_ASSETS.get(cuisine, CUISINE_ASSETS[DEFAULT_CUISINE])
-    resolved_menu = []
-    for item in assets["menu"]:
-        img = item.get("img") or ""
-        if img.startswith("gq:"):
-            query = img.split(":", 1)[1].strip()
-            q = f"{query} {details.get('name') or ''} {cuisine} restaurant"
-            found = await google_image_search(q) or await google_image_search(query)
-            resolved_img = found or ""
-        else:
-            resolved_img = unsplash(img)
-        resolved_menu.append({
-            "name": item["name"],
-            "desc": item["desc"],
-            "price": item["price"],
-            "img": resolved_img,
-        })
-    details["_resolved_menu"] = resolved_menu
+    details["_resolved_menu"] = [
+        {"name": it["name"], "desc": it["desc"], "price": it["price"], "img": it["img"]}
+        for it in assets["menu"][:3]
+    ]
 
 # ────────────────────────────────────────────────────────────────────────────
 # Google: autocomplete, details, chain count
@@ -532,9 +707,7 @@ async def google_nearby_chain_count(name: str, lat: Optional[float], lng: Option
             count += 1
     return count
 
-# ────────────────────────────────────────────────────────────────────────────
 # Yelp fallback
-# ────────────────────────────────────────────────────────────────────────────
 def normalize_suggest_yelp(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     out = []
     for b in payload.get("businesses", []):
@@ -679,30 +852,46 @@ def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, Dict[s
     cuisine = cuisine_from_types(details)
     assets = CUISINE_ASSETS.get(cuisine, CUISINE_ASSETS[DEFAULT_CUISINE])
     pal = assets["palette"]
-    hero_imgs: List[str] = list(assets["hero"])[:4]
+    
+    # Hero images are direct URLs now
+    hero_imgs: List[str] = list((assets.get("hero") or HERO_BY_CUISINE.get(cuisine) or HERO_BY_CUISINE["american"])[:4])
 
     raw_menu_items: List[Dict[str, str]] = list((details.get("_resolved_menu") or [])[:3])
     menu_items: List[Dict[str, str]] = []
     for it in raw_menu_items:
+        # Ensure menu images have proper URLs
+        img_url = it.get("img", "")
+        if img_url and not img_url.startswith(('http://', 'https://')):
+            # If it's still a photo- ID, convert to full Unsplash URL
+            if img_url.startswith("photo-"):
+                img_url = f"https://images.unsplash.com/{img_url}?q=80&w=1600&auto=format&fit=crop"
+            else:
+                img_url = ""
+        
         menu_items.append({
             "name": it["name"],
             "desc": it["desc"],
             "price": it["price"],
-            "img": it["img"],       # resolved URL
-            "fallbacks": "",
+            "img": img_url,
         })
 
     logo, logo_reason = best_logo(details)
     revs = five_star_only(details)
     show_reviews = len(revs) >= 2
     revs = revs[:4]
-    gallery = details.get("gallery") or []
+    gallery_raw = details.get("gallery") or []
+    # Use only Google-provided gallery images; keep unique and limit to 4
+    gallery: List[str] = []
+    for u in gallery_raw:
+        if u and u not in gallery:
+            gallery.append(u)
+    gallery = gallery[:4]
     hrs = hours_list(details)
+    fallback_foto = assets.get("fallback") or HERO_FALLBACK_URL
 
     log.info("BUILD PAGE: name=%s cuisine=%s hero=%d menu=%d gallery=%d",
              name, cuisine, len(hero_imgs), len(menu_items), len(gallery))
 
-    # Note: fixed URL encoding for /imgproxy image param.
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -737,21 +926,25 @@ tailwind.config = {{
 <style>
   html,body{{background:linear-gradient(#FBF8F3,#F5F2ED) fixed; color:#1B1B1B;}}
   .glass{{background:rgba(255,255,255,.55); backdrop-filter: blur(12px); border:1px solid rgba(0,0,0,.06);}}
-  .fade-wrap{{position:relative;height:56vh;max-height:620px;overflow:hidden;border-radius:1.5rem}}
-  .fade-wrap img{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 900ms ease-in-out}}
+  .fade-wrap{{position:relative;height:clamp(320px,60vh,820px);overflow:hidden;border-radius:1.5rem}}
+  @media (min-width:1024px){{.fade-wrap{{height:clamp(420px,62vh,880px)}}}}
+  @media (min-width:1536px){{.fade-wrap{{height:clamp(520px,64vh,920px)}}}}
+  .fade-wrap img{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;opacity:0;transition:opacity 900ms ease-in-out;filter:saturate(1.05) contrast(1.06) brightness(0.98);transform-origin:center;animation:hero-zoom 18s ease-in-out infinite alternate}}
   .fade-wrap img.active{{opacity:1}}
+  @keyframes hero-zoom{{from{{transform:scale(1.02)}}to{{transform:scale(1.08)}}}}
   .dot{{width:8px;height:8px;border-radius:9999px;background:#0003}}
+  @media (min-width:1536px){{.dot{{width:10px;height:10px}}}}
   .dot.active{{background:{pal['primary']};}}
   .card{{background:#FFF;border-radius:1.25rem;box-shadow:var(--tw-shadow, 0 10px 30px rgba(0,0,0,.10));}}
 </style>
 <meta http-equiv="Content-Security-Policy"
-  content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; connect-src 'self'">
+  content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; connect-src 'self' https:">
 <meta name="referrer" content="no-referrer">
 </head>
 <body class="font-body">
 
   <header class="sticky top-0 z-50">
-    <nav class="mx-auto max-w-[1200px] px-4 md:px-6 lg:px-8 py-3 flex items-center justify-between bg-white/80 backdrop-blur border-b border-black/5">
+    <nav class="{CONTAINER} py-3 flex items-center justify-between bg-white/80 backdrop-blur border-b border-black/5">
       <a class="flex items-center gap-3" href="#top" aria-label="{safe(name)}">
         {"<img src='"+safe(logo)+"' class='h-7 w-7 rounded object-contain' alt='logo'/>" if logo else ""}
         <span class="font-semibold tracking-wide">{safe(name)}</span>
@@ -770,9 +963,9 @@ tailwind.config = {{
   </header>
 
   <section id="top" class="pt-6">
-    <div class="mx-auto max-w-[1200px] px-4 md:px-6 lg:px-8">
+    <div class="{CONTAINER}">
       <div class="fade-wrap shadow-soft" id="heroWrap">
-        {"".join([f"<img src='{safe(u)}' data-fallbacks='{safe(assets['fallback'])}' alt='hero image {i+1}' {'class=\"active\"' if i==0 else ''} onerror='__imgSwap(this)' />" for i,u in enumerate(hero_imgs)])}
+        {"".join([f"<img class='hero-img {'active' if i==0 else ''}' src='{safe(u)}' alt='hero image {i+1}' {'loading=\"eager\"' if i==0 else 'loading=\"lazy\"'} decoding='async' />" for i,u in enumerate(hero_imgs)])}
       </div>
       <div class="relative -mt-10 md:-mt-12">
         <div class="glass rounded-3xl p-6 md:p-8 shadow-soft">
@@ -802,7 +995,7 @@ tailwind.config = {{
   </section>
 
   <section id="menu" class="mt-12 md:mt-16">
-    <div class="mx-auto max-w-[1200px] px-4 md:px-6 lg:px-8">
+    <div class="{CONTAINER}">
       <div class="flex items-end justify-between gap-4">
         <h2 class="font-display text-3xl md:text-4xl">Menu Highlights</h2>
         <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition shadow-soft">Order Online</a>
@@ -812,9 +1005,13 @@ tailwind.config = {{
         <article class="card overflow-hidden">
           <div class="aspect-[4/3] w-full overflow-hidden">
             <img class="w-full h-full object-cover"
-                 src="/imgproxy?u={quote(item['img'] or '', safe='')}"
+                 src="{safe(item['img'])}"
                  alt="{safe(item['name'])}"
-                 loading="lazy"/>
+                 loading="lazy"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"/>
+            <div style="display:none" class="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400">
+              <span>Image not available</span>
+            </div>
           </div>
           <div class="p-5 md:p-6 flex items-start justify-between gap-3">
             <div>
@@ -831,7 +1028,7 @@ tailwind.config = {{
   </section>
 
   <section id="about" class="mt-12 md:mt-16">
-    <div class="mx-auto max-w-[1200px] px-4 md:px-6 lg:px-8 grid md:grid-cols-2 gap-7">
+    <div class="{CONTAINER} grid md:grid-cols-2 gap-7">
       <article class="card p-6 md:p-8">
         <h2 class="font-display text-2xl md:text-3xl">About Us</h2>
         <p class="mt-3 text-[17px] leading-7 opacity-90">
@@ -854,10 +1051,13 @@ tailwind.config = {{
   </section>
 
   <section id="gallery" class="mt-12 md:mt-16">
-    <div class="mx-auto max-w-[1200px] px-4 md:px-6 lg:px-8">
+    <div class="{CONTAINER}">
       <h2 class="font-display text-3xl md:text-4xl">Gallery</h2>
       <div class="mt-6 grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {"".join([f"<a href='{safe(u)}' target='_blank' rel='noopener' class='block rounded-2xl overflow-hidden card'><img src='{safe(u)}' data-fallbacks='{safe(assets['fallback'])}' onerror='__imgSwap(this)' class='w-full h-48 object-cover'/></a>" for u in gallery[:4]])}
+        {"".join([
+          f"<a href='{safe(u)}' target='_blank' rel='noopener' class='block rounded-2xl overflow-hidden card'><img src='{safe(u)}' data-fallbacks='{safe(fallback_foto)}' onerror='__imgSwap(this)' class='w-full h-48 object-cover' loading='lazy' decoding='async'/></a>"
+          for u in (gallery[:4] or [])
+        ])}
       </div>
     </div>
   </section>
@@ -866,7 +1066,7 @@ tailwind.config = {{
   if not show_reviews else
   f'''
   <section id="reviews" class="mt-12 md:mt-16">
-    <div class="mx-auto max-w-[1200px] px-4 md:px-6 lg:px-8">
+    <div class="{CONTAINER}">
       <div class="flex items-end justify-between gap-4">
         <h2 class="font-display text-3xl md:text-4xl">What Guests Say</h2>
         {("<div class='opacity-80'>Google rating <span class='font-semibold'>"+str(rating)+"</span> · "+str(int(review_count))+"+ reviews</div>") if rating and review_count else ""}
@@ -891,7 +1091,7 @@ tailwind.config = {{
   '''}
 
   <section id="contact" class="mt-12 md:mt-16 mb-16">
-    <div class="mx-auto max-w-[1200px] px-4 md:px-6 lg:px-8">
+    <div class="{CONTAINER}">
       <div class="card p-8 grid md:grid-cols-3 gap-6">
         <div>
           <h3 class="font-display text-2xl">Visit Us</h3>
@@ -1147,7 +1347,7 @@ def _is_private_host(u: str) -> bool:
         return True
 
 @app.get("/imgproxy", summary="Fetch whitelisted images with SSRF protection")
-async def imgproxy(u: str, _: None = Depends(rate_limit), __: None = Depends(security_guard)):
+async def imgproxy(u: str, _: None = Depends(rate_limit)):
     u = _clean_url(u)
     if not u:
         raise HTTPException(400, "Bad URL")
