@@ -1,5 +1,5 @@
 # app.py
-import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging
+import os, re, time, json, hashlib, base64, io, hmac, ipaddress, asyncio, logging, socket
 from urllib.parse import urlparse, quote
 from typing import Optional, Literal, Dict, Any, List, Tuple
 
@@ -11,17 +11,10 @@ from dotenv import load_dotenv
 import httpx
 from httpx import AsyncClient, Limits, Timeout
 from contextlib import asynccontextmanager
+from fastapi.responses import StreamingResponse
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 from colorthief import ColorThief
-# OpenAI (optional) for narrative analysis
-try:
-    from openai import OpenAI  # SDK v1+
-except Exception:
-    OpenAI = None
-    
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-
 
 # ────────────────────────────────────────────────────────────────────────────
 # Env & Config
@@ -329,6 +322,23 @@ def guess_favicon_urls(homepage: Optional[str]) -> List[str]:
 # ────────────────────────────────────────────────────────────────────────────
 # Safe Google Image Search + Unsplash helper
 # ────────────────────────────────────────────────────────────────────────────
+def unsplash(id_or_url: str, w: int = 1600) -> str:
+    """
+    Returns a usable image URL.
+    Supports:
+      • 'gq:<query>'              -> to be resolved via Google Image Search before HTML build
+      • Full http(s) URL          -> returned as-is
+      • 'photo-…' fragment        -> Unsplash CDN (legacy support)
+    """
+    u = (id_or_url or "").strip()
+    if not u:
+        return ""
+    if u.startswith("http://") or u.startswith("https://"):
+        return u
+    if u.startswith("photo-"):
+        return f"https://images.unsplash.com/{u}?q=80&w={w}&auto=format&fit=crop"
+    # 'gq:' handled earlier (pre-resolved); pass token through unchanged for now
+    return u
 
 # ────────────────────────────────────────────────────────────────────────────
 # Safe Google Image Search + Unsplash helper
@@ -714,278 +724,6 @@ def select_theme_colors(cuisine: str, context: Dict[str, Any], logo_color: Optio
         return fast_food_palette.get(cuisine, base_colors)
 
     return base_colors
-  
- # ────────────────────────────────────────────────────────────────────────────
-# Insights: negative-review mining + online presence scoring + (optional) AI summary
-NEGATIVE_WEBAPP_KEYWORDS = [
-    r"website", r"web\s*site", r"online order", r"online ordering", r"order online",
-    r"mobile app", r"ios app", r"android app", r"app (?:doesn't|does not|won't|will not|can't|cannot|crashes|crashed)",
-    r"menu (?:wrong|outdated|missing|not updated|broken)", r"link (?:broken|404|dead)",
-    r"checkout (?:error|failed|doesn't work|does not work|won't work)",
-    r"payment (?:failed|error|declined)", r"coupon(?: code)? not working",
-    r"slow (?:website|app)", r"can't find (?:menu|hours)", r"hours (?:wrong|incorrect)",
-]
-
-def _filter_reviews(details: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return [
-        {
-            "author": rv.get("author_name"),
-            "rating": rv.get("rating"),
-            "text": (rv.get("text") or "").strip(),
-            "relative_time": rv.get("relative_time"),
-        }
-        for rv in (details.get("reviews") or [])
-        if (rv.get("text") or "").strip()
-    ]
-
-def mine_webapp_complaints(reviews: List[Dict[str, Any]], *, max_items: int = 3, low_star_only: bool = True, keywords: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for rv in reviews:
-        txt = (rv.get("text") or "").lower()
-        rating = int(rv.get("rating") or 0)
-        if low_star_only and rating > 1:
-            continue
-        hit = False
-        for pat in (keywords if keywords else NEGATIVE_WEBAPP_KEYWORDS):
-            try:
-                if re.search(pat, txt, flags=re.I):
-                    hit = True
-                    break
-            except Exception:
-                pass
-        if hit:
-            out.append(rv)
-            if len(out) >= max_items:
-                break
-    return out
-
-def mine_one_star(reviews: List[Dict[str, Any]], *, max_items: int = 3) -> List[Dict[str, Any]]:
-    out = [rv for rv in reviews if (rv.get("rating") or 0) <= 1]
-    return out[:max_items]
-
-# Generic: filter reviews by keyword list (case-insensitive). Optional rating bounds and limit.
-def filter_reviews_by_keywords(
-    reviews: List[Dict[str, Any]],
-    keyword_list: List[str],
-    *,
-    min_rating: Optional[int] = None,
-    max_rating: Optional[int] = None,
-    limit: int = 3,
-) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    kws = [k.strip().lower() for k in (keyword_list or []) if k and k.strip()]
-    if not kws:
-        return out
-    for rv in reviews:
-        txt = (rv.get('text') or '').lower()
-        rating = int(rv.get('rating') or 0)
-        if min_rating is not None and rating < min_rating:
-            continue
-        if max_rating is not None and rating > max_rating:
-            continue
-        for kw in kws:
-            if kw in txt:
-                out.append({
-                    'author': rv.get('author'),
-                    'rating': rating,
-                    'text': rv.get('text') or '',
-                    'relative_time': rv.get('relative_time'),
-                    'keyword_found': kw,
-                })
-                break  # avoid duplicates for multiple keyword hits
-        if len(out) >= limit:
-            break
-    return out
-def select_negative_reviews(reviews: List[Dict[str, Any]], kw_list: List[str], limit: int = 3) -> List[Dict[str, Any]]:
-    """Return exactly `limit` reviews prioritizing:
-       (a) keyword-matched (any rating, lowest rating first),
-       (b) any 1★,
-       (c) any ≤2★,
-       (d) any ≤3★,
-       (e) pad with lowest-rated remaining reviews.
-    """
-    # Normalize keywords; if none provided, use a compact default set
-    if not kw_list:
-        kw_list = [
-            'website','web site','online order','online ordering','order online',
-            'mobile app','app','hours','menu','checkout','payment','link','slow'
-        ]
-    kws = [k.strip().lower() for k in kw_list if k and k.strip()]
-
-    def has_kw(rv: Dict[str, Any]) -> bool:
-        txt = (rv.get('text') or '').lower()
-        return any(k in txt for k in kws)
-
-    def rating_of(rv: Dict[str, Any]) -> int:
-        try:
-            return int(rv.get('rating') or 0)
-        except Exception:
-            return 0
-
-    chosen: List[Dict[str, Any]] = []
-    seen = set()
-
-    def add_pool(pool: List[Dict[str, Any]]):
-        nonlocal chosen
-        for rv in pool:
-            key = (rv.get('author'), rv.get('text'))
-            if key in seen:
-                continue
-            seen.add(key)
-            chosen.append(rv)
-            if len(chosen) >= limit:
-                return True
-        return False
-
-    # Sort a base copy by rating ascending (lowest first) for deterministic padding
-    by_lowest = sorted(reviews, key=rating_of)
-
-    # (a) keyword-matched of any rating, lowest rating first
-    kw_hits_any = [rv for rv in by_lowest if has_kw(rv)]
-    if add_pool(kw_hits_any):
-        return chosen[:limit]
-
-    # (b) any 1★
-    ones = [rv for rv in by_lowest if rating_of(rv) <= 1]
-    if add_pool(ones):
-        return chosen[:limit]
-
-    # (c) any ≤2★
-    twos = [rv for rv in by_lowest if rating_of(rv) <= 2]
-    if add_pool(twos):
-        return chosen[:limit]
-
-    # (d) any ≤3★
-    threes = [rv for rv in by_lowest if rating_of(rv) <= 3]
-    if add_pool(threes):
-        return chosen[:limit]
-
-    # (e) pad with the lowest-rated remaining reviews regardless of rating
-    add_pool(by_lowest)
-
-    return chosen[:limit]
-
-# Parse Google/Yelp-style relative time strings to rough day counts (e.g., "2 months ago")
-_REL_UNITS = {
-    'day': 1, 'days': 1,
-    'week': 7, 'weeks': 7,
-    'month': 30, 'months': 30,
-    'year': 365, 'years': 365,
-}
-
-def _relative_time_to_days(rel: Optional[str]) -> Optional[int]:
-    if not rel:
-        return None
-    s = rel.strip().lower()
-    # common forms: "2 months ago", "3 weeks ago", "yesterday", "today"
-    if s in ('today',):
-        return 0
-    if s in ('yesterday',):
-        return 1
-    m = re.search(r"(\d+)\s+(day|days|week|weeks|month|months|year|years)", s)
-    if not m:
-        return None
-    n = int(m.group(1))
-    unit = m.group(2)
-    return n * _REL_UNITS.get(unit, 0) or None
-
-def _recent_keyword_one_stars(reviews: List[Dict[str, Any]], *, keywords: List[str], within_days: int) -> int:
-    cnt = 0
-    pats = [k.strip().lower() for k in (keywords or []) if k and k.strip()]
-    for rv in reviews:
-        rating = int(rv.get('rating') or 0)
-        if rating > 1:
-            continue
-        txt = (rv.get('text') or '').lower()
-        rel = rv.get('relative_time')
-        days = _relative_time_to_days(rel)
-        if days is None or days > within_days:
-            continue
-        if any(kw in txt for kw in pats):
-            cnt += 1
-    return cnt
-
-async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Optional[List[str]] = None, recent_days: int = 90) -> Dict[str, Any]:
-    """Heuristic 0–100 score with contributing factors."""
-    score = 100
-    reasons: List[str] = []
-
-    rating = float(details.get("rating") or 0)
-    reviews_ct = int(details.get("review_count") or 0)
-    if rating < 3.5:
-        score -= 15
-        reasons.append(f"Low average rating ({rating:.1f})")
-    if reviews_ct < 100:
-        score -= 10
-        reasons.append("Low review volume (<100)")
-
-    if not details.get("website"):
-        score -= 20
-        reasons.append("No official website listed")
-
-    if len(details.get("gallery") or []) < 3:
-        score -= 8
-        reasons.append("Few photos in Google gallery")
-
-    if not details.get("hours_text"):
-        score -= 6
-        reasons.append("Missing operating hours")
-
-    # Chains nearby -> harder to stand out
-    if (details.get("chain_count_nearby") or 0) >= 2:
-        score -= 6
-        reasons.append("Nearby chain competition is high")
-
-    # Recent 1★ keyword complaints (e.g., website/app) within the last N days
-    try:
-        reviews = _filter_reviews(details)
-        kws = keyword_list if (keyword_list and len(keyword_list) > 0) else [
-            'website','online order','online ordering','order online','mobile app','app','hours','menu','checkout','payment'
-        ]
-        recent_hits = _recent_keyword_one_stars(reviews, keywords=kws, within_days=recent_days)
-        if recent_hits:
-            score -= 12
-            reasons.append(f"{recent_hits} recent 1★ mention(s) of website/app issues")
-    except Exception:
-        pass
-
-    # Brand signal (logo color)
-    try:
-        _lu, _lc, _rs = await best_logo_with_color(details)
-        if not _lc:
-            score -= 4
-            reasons.append("No detectable brand color/logo theme")
-    except Exception:
-        pass
-
-    score = max(0, min(100, score))
-    level = "Excellent" if score >= 85 else "Good" if score >= 70 else "Needs Work" if score >= 50 else "At Risk"
-    return {"score": score, "level": level, "reasons": reasons}
-
-async def ai_presence_oneliner(details: Dict[str, Any], prescore: Dict[str, Any], complaints: List[Dict[str, Any]]) -> str:
-    name = details.get('name') or 'This restaurant'
-    rating = details.get('rating')
-    reasons = prescore.get('reasons') or []
-    if OPENAI_API_KEY and OpenAI is not None:
-        try:
-            client = OpenAI(api_key=OPENAI_API_KEY)
-            issues = "; ".join(reasons[:3]) or "key gaps in your online presence"
-            inp = (
-                f"Write ONE tactful, persuasive sentence (max 28 words) explaining why {name} should improve its online presence now, based on: rating {rating}, reasons: {issues}. "
-                "Avoid buzzwords; be specific and positive about the outcome."
-            )
-            resp = client.responses.create(model="gpt-4.1-mini", input=[{"role":"user","content":inp}], temperature=0.5)
-            line = (resp.output_text or "").strip()
-            if line:
-                return line
-        except Exception:
-            pass
-    # Fallback deterministic line
-    if reasons:
-        return f"Your online presence is slipping—{reasons[0].rstrip('.')}—let us fix it with a fast, modern site that converts more customers."
-    return "A stronger website and clearer information can win you more customers—let us help you upgrade quickly."
-
-# ────────────────────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────
 # Google: autocomplete, details, chain count
 # ────────────────────────────────────────────────────────────────────────────
@@ -1145,41 +883,6 @@ async def google_nearby_chain_count(name: str, lat: Optional[float], lng: Option
             count += 1
     return count
 
-async def google_nearby_restaurants(lat: Optional[float], lng: Optional[float], *, radius_m: int = 16093, limit: int = 60) -> List[Dict[str, Any]]:
-    """List nearby restaurants within radius_m (~10 miles) with basic info.
-    Paginates through Google Nearby Search to return up to `limit` results.
-    """
-    if not GOOGLE_API_KEY or lat is None or lng is None:
-        return []
-    out: List[Dict[str, Any]] = []
-    page_token: Optional[str] = None
-    while True:
-        params = {
-            "location": f"{lat},{lng}",
-            "radius": str(max(1000, min(radius_m, 50000))),
-            "type": "restaurant",
-            "key": GOOGLE_API_KEY,
-        }
-        if page_token:
-            params["pagetoken"] = page_token
-        data = await http_get_json("https://maps.googleapis.com/maps/api/place/nearbysearch/json", params=params)
-        results = data.get("results") or []
-        for r in results:
-            pid = r.get("place_id")
-            name = r.get("name")
-            rating = r.get("rating")
-            map_url = f"https://www.google.com/maps/place/?q=place_id:{pid}" if pid else None
-            out.append({"id": pid, "name": name, "rating": rating, "map_url": map_url})
-            if len(out) >= limit:
-                return out
-        page_token = data.get("next_page_token")
-        if not page_token:
-            break
-        # Google requires a short delay before using next_page_token
-        await asyncio.sleep(2.1)
-    return out
-  
-
 # Yelp fallback
 def normalize_suggest_yelp(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     out = []
@@ -1297,6 +1000,18 @@ def five_star_only(details: Dict[str, Any]) -> List[Dict[str, str]]:
     src = details.get("reviews") or []
     return [rv for rv in src if (rv.get("rating") or 0) == 5]
 
+def _menu_primary_and_fallbacks(item: Dict[str, Any], cuisine_fallback: str) -> Tuple[str, str]:
+    primary = None
+    fallbacks: List[str] = []
+    imgs = item.get("imgs") or []
+    if imgs:
+        primary = imgs[0]
+        fallbacks = imgs[1:]
+    else:
+        primary = item.get("img") or cuisine_fallback
+    if cuisine_fallback and (not fallbacks or fallbacks[-1] != cuisine_fallback):
+        fallbacks.append(cuisine_fallback)
+    return primary, "|".join(fallbacks)
 
 # ────────────────────────────────────────────────────────────────────────────
 # HTML builder
@@ -1310,25 +1025,29 @@ async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, 
     rating = details.get("rating")
     review_count = details.get("review_count")
     map_url = details.get("map_url") or "#"
+    cuisine = cuisine_from_types(details)
+    assets = CUISINE_ASSETS.get(cuisine, CUISINE_ASSETS[DEFAULT_CUISINE])
+    pal = assets["palette"]
+    
 
     # Use improved cuisine detection
     cuisine = cuisine_from_types(details)
-
+    
     # Get restaurant context
     context = get_restaurant_context(details)
-
+    
     # Select appropriate theme colors
     # Get logo and brand color
     logo, logo_color, logo_reason = await best_logo_with_color(details)
     if not logo_color:
         log.info("ColorThief could not extract a brand color for %s; falling back to cuisine palette", details.get("name"))
     pal = select_theme_colors(cuisine, context, logo_color)
-
+    
     # Get assets for the detected cuisine
     assets = CUISINE_ASSETS.get(cuisine, CUISINE_ASSETS[DEFAULT_CUISINE])
-
+    
     # Log the detection results
-    log.info("BUILD PAGE: name=%s cuisine=%s context=%s colors=%s logo_color=%s",
+    log.info("BUILD PAGE: name=%s cuisine=%s context=%s colors=%s logo_color=%s", 
              name, cuisine, context["atmosphere"], pal["primary"], logo_color)
     
     # Smart hero image selection (prefers interior shots from Google, then curated Unsplash)
@@ -1685,94 +1404,6 @@ async def suggest(
     SUGGEST_CACHE.set(key, result)
     return result
 
-@app.get("/insights/negative-reviews", summary="Fetch up to 3 low-rated reviews, preferring website/app complaints")
-async def insights_negative_reviews(
-    request: Request,
-    id: str = Query(..., description="Google place_id or Yelp business id"),
-    provider: Literal["google","yelp"] = Query("google"),
-    limit: int = Query(3, ge=1, le=6),
-    _: None = Depends(rate_limit),
-    __: None = Depends(security_guard),
-):
-    # Reuse details fetch
-    if provider == "google":
-        data = await google_details(id)
-        details_payload = normalize_details_google(data)
-    else:
-        y = await yelp_business_details(id)
-        details_payload = normalize_details_yelp(y)
-
-    reviews = _filter_reviews(details_payload)
-    preferred = mine_webapp_complaints(reviews, max_items=limit, low_star_only=True)
-    source = "webapp_complaints_1star"
-    if not preferred:
-        preferred = mine_one_star(reviews, max_items=limit)
-        source = "one_star"
-        if not preferred:
-            # last resort: 2★ complaints
-            preferred = mine_webapp_complaints(reviews, max_items=limit, low_star_only=False)
-            source = "webapp_complaints_lowstar"
-
-    return {"id": details_payload.get("id"), "name": details_payload.get("name"), "source": source, "reviews": preferred}
-
-
-@app.post("/insights/presence", summary="Compute online presence score and optional AI summary")
-async def insights_presence(
-    payload: GeneratePayload,
-    request: Request,
-    _: None = Depends(rate_limit),
-    __: None = Depends(security_guard),
-):
-    # Build details object similar to generate_template
-    details = payload.details
-    if not details:
-        if not payload.place_id:
-            raise HTTPException(400, "Provide either details or place_id")
-        if payload.provider == "google":
-            g = await google_details(payload.place_id)
-            details = normalize_details_google(g)
-            try:
-                chain_count = await google_nearby_chain_count(
-                    details.get("name") or "",
-                    details.get("lat"), details.get("lng"), details.get("id"), CHAIN_RADIUS_M
-                )
-            except Exception:
-                chain_count = 0
-            details["chain_count_nearby"] = chain_count
-            details["is_chain_nearby"] = bool(chain_count and chain_count >= 1)
-        else:
-            y = await yelp_business_details(payload.place_id)
-            details = normalize_details_yelp(y)
-
-    # Keywords (payload may include a list, optional)
-    kw_list = getattr(payload, "keywords", None) if hasattr(payload, "keywords") else None
-    if isinstance(kw_list, list):
-        kw_list = [k.strip() for k in kw_list if isinstance(k, str) and k.strip()]
-    else:
-        kw_list = []
-
-    # Nearby (fetch as many as possible up to 60 within ~10 miles)
-    nearby = await google_nearby_restaurants(details.get("lat"), details.get("lng"), radius_m=16093, limit=60)
-
-    # Reviews (EXACTLY 3, with keyword preference then fallbacks)
-    reviews_all = _filter_reviews(details)
-    complaints = select_negative_reviews(reviews_all, kw_list, limit=3)
-    log.info("presence/unified: selected %d negative reviews (limit=%d)", len(complaints), 3)
-
-    # Presence score (already includes recent 1★ keyword penalty if any)
-    prescore = await compute_online_presence(details, keyword_list=kw_list or None, recent_days=90)
-
-    # One-line AI pitch
-    ai_line = await ai_presence_oneliner(details, prescore, complaints)
-
-    return {
-        "id": details.get("id"),
-        "name": details.get("name"),
-        "nearby": nearby,
-        "presence": prescore,
-        "reviews": complaints,     # exactly 3
-        "ai_oneline": ai_line,     # persuasive one-liner
-    }
 @app.get("/details", summary="Get business details")
 async def details(
     request: Request,
