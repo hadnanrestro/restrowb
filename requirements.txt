@@ -34,3 +34,6 @@ colorthief
 
 # Caching
 redis
+
+# OpenAI
+openai>=1.0.0
