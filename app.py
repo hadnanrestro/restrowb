@@ -1977,3 +1977,44 @@ async def details(
 
     DETAILS_CACHE.set(key, payload)
     return payload
+
+@app.post("/generate/template", response_model=TemplateOut, summary="Generate a premium HTML landing page from details")
+async def generate_template(
+    payload: GeneratePayload,
+    request: Request,
+    _: None = Depends(rate_limit),
+    __: None = Depends(security_guard),
+):
+    """Builds an HTML landing page using provided details or by fetching them.
+    Returns HTML plus meta (palette, logo, cuisine, etc.).
+    """
+    # Resolve details
+    details: Dict[str, Any]
+    if payload.details:
+        details = payload.details
+    else:
+        if not payload.place_id:
+            raise HTTPException(400, "place_id is required when details are not provided")
+        provider = (payload.provider or "google").lower()
+        if provider == "google":
+            try:
+                g = await google_details(payload.place_id)
+                details = normalize_details_google(g)
+            except Exception as e:
+                raise HTTPException(502, f"Failed to fetch Google details: {e}")
+        elif provider == "yelp":
+            try:
+                y = await yelp_business_details(payload.place_id)
+                details = normalize_details_yelp(y)
+            except Exception as e:
+                raise HTTPException(502, f"Failed to fetch Yelp details: {e}")
+        else:
+            raise HTTPException(400, "Unsupported provider; use 'google' or 'yelp'")
+
+    # Build the page
+    try:
+        html, meta = await build_html(details, sales_cta=payload.sales_cta)
+        return TemplateOut(html=html, react=None, meta=meta)
+    except Exception as e:
+        log.error(f"Error building HTML: {e}")
+        raise HTTPException(500, "Failed to generate template")
