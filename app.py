@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+load_dotenv()  # Load .env early so OPENAI_API_KEY and others are available
 import httpx
 from httpx import AsyncClient, Limits, Timeout
 from contextlib import asynccontextmanager
@@ -26,7 +27,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 # ────────────────────────────────────────────────────────────────────────────
 # Env & Config
 # ────────────────────────────────────────────────────────────────────────────
-load_dotenv()
 
 GOOGLE_API_KEY  = os.getenv("GOOGLE_PLACES_API_KEY", "")
 YELP_API_KEY    = os.getenv("YELP_API_KEY", "")  # optional fallback
@@ -107,6 +107,12 @@ async def lifespan(app: FastAPI):
     if not GOOGLE_API_KEY:
         log.warning("GOOGLE_PLACES_API_KEY is not set; Google endpoints will fail.")
     try:
+        # Log key presence (masked) for debugging
+        k = os.getenv("OPENAI_API_KEY", "")
+        if not k:
+            log.warning("OPENAI_API_KEY not found in environment at startup")
+        else:
+            log.info("OPENAI_API_KEY detected (len=%d, masked=%s…%s)", len(k), k[:4], k[-4:])
         yield
     finally:
         await app.state.http.aclose()
@@ -949,6 +955,30 @@ async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Opti
     except Exception:
         pass
 
+    # Infer whether they have a mobile app (heuristic)
+    has_mobile_app = False
+    try:
+        urls_to_check = [details.get('website') or '', details.get('map_url') or '']
+        def _looks_like_app_link(u: str) -> bool:
+            s = (u or '').lower()
+            return ('apps.apple.com' in s) or ('play.google.com' in s) or ('/app' in s) or (s.split('://')[-1].startswith('app.'))
+        if any(_looks_like_app_link(u) for u in urls_to_check):
+            has_mobile_app = True
+        else:
+            for rv in reviews:
+                t = (rv.get('text') or '').lower()
+                if ('mobile app' in t) or re.search(r'\bthe app\b', t) or re.search(r'\bapp\b', t):
+                    has_mobile_app = True
+                    break
+    except Exception:
+        pass
+
+    # Explicit reason if mobile app not found
+    if not has_mobile_app:
+        # avoid duplicate phrasing if already added by earlier logic
+        if not any("mobile app" in r.lower() for r in reasons):
+            reasons.append("Mobile app availability not found")
+
     # Brand signal (logo color)
     try:
         _lu, _lc, _rs = await best_logo_with_color(details)
@@ -958,32 +988,111 @@ async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Opti
     except Exception:
         pass
 
+    # Ensure we surface at least 4 reasons
+    website = details.get("website")
+    most_recent_days = None
+    try:
+        # Try to find the most recent review days for context
+        if reviews:
+            days_list = [_relative_time_to_days(rv.get("relative_time")) for rv in reviews if _relative_time_to_days(rv.get("relative_time")) is not None]
+            if days_list:
+                most_recent_days = min(days_list)
+    except Exception:
+        pass
+    chain_cnt = details.get("chain_count_nearby") or 0
+    if len(reasons) < 4:
+        if (most_recent_days is None) or (most_recent_days is not None and most_recent_days > 30):
+            reasons.append("Low recent review activity")
+        if website:
+            reasons.append("Website performance/clarity unknown—optimize for mobile speed and menu visibility")
+        if chain_cnt >= 1 and all('chain' not in r for r in reasons):
+            reasons.append("Some nearby chain presence")
+        if len(reasons) < 4:
+            reasons.append("Brand consistency can be improved online")
+
     score = max(0, min(100, score))
+    score = max(0, min(100, score - 15))
+    score = max(0, min(100, score - 20))
     level = "Excellent" if score >= 85 else "Good" if score >= 70 else "Needs Work" if score >= 50 else "At Risk"
-    return {"score": score, "level": level, "reasons": reasons}
+    rating = float(details.get("rating") or 0)
+    reviews_ct = int(details.get("review_count") or 0)
+    metrics = {
+        "rating": rating,
+        "review_count": reviews_ct,
+        "most_recent_review_days": most_recent_days,
+        "has_website": bool(website),
+        "has_mobile_app": has_mobile_app,
+    }
+    return {"score": score, "level": level, "reasons": reasons, "metrics": metrics}
 
 async def ai_presence_oneliner(details: Dict[str, Any], prescore: Dict[str, Any], complaints: List[Dict[str, Any]]) -> str:
     name = details.get('name') or 'This restaurant'
     rating = details.get('rating')
     reasons = prescore.get('reasons') or []
-    if OPENAI_API_KEY and OpenAI is not None:
+
+    # Build a compact, targeted prompt
+    issues = ", ".join(reasons[:3]) or "gaps in online presence"
+    prompt = (
+        f"Write ONE tactful, persuasive sentence (max 28 words) explaining why {name} should improve its online presence now. "
+        f"Ground it in these signals: rating {rating}, reasons: {issues}. "
+        "Avoid hyphens and buzzwords; be specific and positive about the outcome."
+    )
+
+    def _sanitize(line: str) -> str:
+        if not line:
+            return ""
+        s = (line or "").replace("\n", " ").replace("—", "-").strip()
+        # Remove stray quotes and enforce no hyphens per instruction
+        s = s.strip('"\'')
+        s = s.replace('-', ' ')
+        # Soft word cap at 28 words
+        parts = s.split()
+        if len(parts) > 28:
+            s = " ".join(parts[:28])
+        return s
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if api_key and OpenAI is not None:
         try:
-            client = OpenAI(api_key=OPENAI_API_KEY)
-            issues = "; ".join(reasons[:3]) or "key gaps in your online presence"
-            inp = (
-                f"Write ONE tactful, persuasive sentence (max 28 words) explaining why {name} should improve its online presence now, based on: rating {rating}, reasons: {issues}. "
-                "Avoid buzzwords; be specific and positive about the outcome."
-            )
-            resp = client.responses.create(model="gpt-4.1-mini", input=[{"role":"user","content":inp}], temperature=0.5)
-            line = (resp.output_text or "").strip()
-            if line:
-                return line
-        except Exception:
-            pass
+            client = OpenAI(api_key=api_key)
+            # Try Responses API first
+            try:
+                resp = client.responses.create(
+                    model="gpt-4o-mini",
+                    input=[{"role": "user", "content": prompt}],
+                    max_output_tokens=60,
+                    temperature=0.4,
+                )
+                line = getattr(resp, 'output_text', None) or ""
+                line = _sanitize(line)
+                if line:
+                    log.debug("ai_oneline: used Responses API")
+                    return line
+            except Exception as e:
+                log.debug(f"ai_oneline: Responses API failed: {e}")
+
+            # Fallback: Chat Completions API (broader compatibility)
+            try:
+                chat = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=60,
+                    temperature=0.4,
+                )
+                content = (chat.choices[0].message.content or "") if chat and chat.choices else ""
+                line = _sanitize(content)
+                if line:
+                    log.debug("ai_oneline: used Chat Completions API")
+                    return line
+            except Exception as e:
+                log.debug(f"ai_oneline: Chat Completions failed: {e}")
+        except Exception as e:
+            log.debug(f"ai_oneline: OpenAI initialization failed: {e}")
+
     # Fallback deterministic line
     if reasons:
-        return f"Your online presence is slipping—{reasons[0].rstrip('.')}—let us fix it with a fast, modern site that converts more customers."
-    return "A stronger website and clearer information can win you more customers—let us help you upgrade quickly."
+        return _sanitize(f"Your online presence is slipping, {reasons[0].rstrip('.')}; let us fix it with a fast, modern site that converts more customers.")
+    return "A stronger website and clearer information can win you more customers; let us help you upgrade quickly."
 
 # ────────────────────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────
@@ -1262,9 +1371,6 @@ class TemplateOut(BaseModel):
     react: Optional[str] = None
     meta: Dict[str, Any]
 
-class PdfOut(BaseModel):
-    html: str
-    pdf_base64: Optional[str] = None
 
 # ────────────────────────────────────────────────────────────────────────────
 # View helpers (logo pick, hours, reviews 5★ only)
@@ -1297,11 +1403,7 @@ def five_star_only(details: Dict[str, Any]) -> List[Dict[str, str]]:
     src = details.get("reviews") or []
     return [rv for rv in src if (rv.get("rating") or 0) == 5]
 
-
-# ────────────────────────────────────────────────────────────────────────────
 # HTML builder
-# ────────────────────────────────────────────────────────────────────────────
-
 async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, Dict[str, Any]]:
     name = details.get("name") or "Restaurant"
     address = details.get("address") or ""
@@ -1650,9 +1752,47 @@ tailwind.config = {{
 # ────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ────────────────────────────────────────────────────────────────────────────
+
 @app.get("/healthz", summary="Liveness probe")
 async def healthz():
     return {"ok": True, "ts": time.time()}
+
+# OpenAI health check endpoint
+@app.get("/health/openai", summary="OpenAI connectivity probe")
+async def health_openai():
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        return {"ok": False, "openai": "unreachable", "error": "OPENAI_API_KEY not set"}
+    if OpenAI is None:
+        return {"ok": False, "openai": "unreachable", "error": "OpenAI SDK not available"}
+    try:
+        client = OpenAI(api_key=api_key)
+        # Try a lightweight call to check connectivity
+        # Prefer listing models, fallback to a trivial completion if needed
+        try:
+            # Try listing models (should be fast and low-cost)
+            models = client.models.list()
+            # Check for gpt-4o-mini presence
+            model_names = [m.id for m in getattr(models, "data", []) if hasattr(m, "id")]
+            if "gpt-4o-mini" in model_names:
+                return {"ok": True, "openai": "reachable", "model": "gpt-4o-mini"}
+            # If not found, just return reachable
+            return {"ok": True, "openai": "reachable", "model": model_names[0] if model_names else None}
+        except Exception as e:
+            # Fallback: try a trivial chat completion
+            try:
+                chat = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                    temperature=0,
+                )
+                # If we get here, OpenAI is reachable
+                return {"ok": True, "openai": "reachable", "model": "gpt-4o-mini"}
+            except Exception as e2:
+                return {"ok": False, "openai": "unreachable", "error": str(e2)}
+    except Exception as e:
+        return {"ok": False, "openai": "unreachable", "error": str(e)}
 
 @app.get("/suggest", summary="Typeahead suggestions (Google-first; Yelp fallback if empty)")
 async def suggest(
@@ -1793,160 +1933,27 @@ async def details(
             payload = {"result": normalize_details_google(g)}
             if include_chain_info:
                 r = payload["result"]
-                chain_count = await google_nearby_chain_count(r.get("name") or "", r.get("lat"), r.get("lng"), r.get("id"), CHAIN_RADIUS_M)
+                try:
+                    chain_count = await google_nearby_chain_count(
+                        r.get("name") or "",
+                        r.get("lat"),
+                        r.get("lng"),
+                        r.get("id") or id,
+                        CHAIN_RADIUS_M,
+                    )
+                except Exception:
+                    chain_count = 0
                 r["chain_count_nearby"] = chain_count
                 r["is_chain_nearby"] = bool(chain_count and chain_count >= 1)
-            DETAILS_CACHE.set(key, payload)
-            return payload
-        except HTTPException:
-            if not YELP_API_KEY:
-                raise
+        except Exception as e:
+            raise HTTPException(502, f"Failed to fetch Google details: {e}")
+    else:
+        try:
+            y = await yelp_business_details(id)
+            payload = {"result": normalize_details_yelp(y)}
+            # Yelp does not support chain count here; omit
+        except Exception as e:
+            raise HTTPException(502, f"Failed to fetch Yelp details: {e}")
 
-    if provider == "yelp":
-        if not YELP_API_KEY:
-            raise HTTPException(404, "Yelp fallback disabled or missing YELP_API_KEY")
-        y = await yelp_business_details(id)
-        result = normalize_details_yelp(y)
-        if include_chain_info and result.get("lat") is not None and result.get("lng") is not None and result.get("name"):
-            try:
-                fake_self_id = "yelp-" + (result.get("id") or "")
-                chain_count = await google_nearby_chain_count(result["name"], result["lat"], result["lng"], fake_self_id, CHAIN_RADIUS_M)
-                result["chain_count_nearby"] = chain_count
-                result["is_chain_nearby"] = bool(chain_count and chain_count >= 1)
-            except Exception:
-                pass
-        payload = {"result": result}
-        DETAILS_CACHE.set(key, payload)
-        return payload
-
-    raise HTTPException(400, "Invalid provider")
-
-@app.post("/generate/template", response_model=TemplateOut, summary="Generate a premium HTML landing page from details")
-async def generate_template(
-    payload: GeneratePayload,
-    request: Request,
-    _: None = Depends(rate_limit),
-    __: None = Depends(security_guard),
-):
-    """
-    Builds the premium HTML landing page.
-    Also resolves 'gq:' menu images via Google CSE first.
-    """
-    details = payload.details
-    if not details:
-        if not payload.place_id:
-            raise HTTPException(400, "Provide either details or place_id")
-
-        if payload.provider == "google":
-            g = await google_details(payload.place_id)
-            details = normalize_details_google(g)
-            try:
-                chain_count = await google_nearby_chain_count(
-                    details.get("name") or "",
-                    details.get("lat"),
-                    details.get("lng"),
-                    details.get("id"),
-                    CHAIN_RADIUS_M
-                )
-            except Exception:
-                chain_count = 0
-            details["chain_count_nearby"] = chain_count
-            details["is_chain_nearby"] = bool(chain_count and chain_count >= 1)
-        else:
-            y = await yelp_business_details(payload.place_id)
-            details = normalize_details_yelp(y)
-
-    try:
-        await resolve_menu_images(details, cuisine_from_types(details))
-    except Exception as e:
-        log.warning("resolve_menu_images failed: %r", e)
-
-    html, meta = await build_html(details, sales_cta=payload.sales_cta)
-    return TemplateOut(html=html, react=None, meta=meta)
-
-# ────────────────────────────────────────────────────────────────────────────
-# PDF generation
-# ────────────────────────────────────────────────────────────────────────────
-def html_to_pdf_b64(html: str) -> Optional[str]:
-    try:
-        from weasyprint import HTML
-        pdf_bytes = HTML(string=html).write_pdf()
-        return base64.b64encode(pdf_bytes).decode("ascii")
-    except Exception as e:
-        log.warning("PDF generation skipped: %r", e)
-        return None
-
-@app.post("/generate/pdf", response_model=PdfOut, summary="Generate a PDF brand pack from the HTML")
-async def generate_pdf(
-    payload: GeneratePayload,
-    request: Request,
-    _: None = Depends(rate_limit),
-    __: None = Depends(security_guard),
-):
-    tpl: TemplateOut = await generate_template(payload, request)  # type: ignore
-    pdf_b64 = html_to_pdf_b64(tpl.html or "")
-    return PdfOut(html=tpl.html or "", pdf_base64=pdf_b64)
-
-# ────────────────────────────────────────────────────────────────────────────
-# Hardened image proxy (SSRF-safe + size/type checks)
-# ────────────────────────────────────────────────────────────────────────────
-ALLOWED_IMG_HOSTS = {
-    "images.unsplash.com",
-    "maps.googleapis.com",
-    "lh3.googleusercontent.com",
-    "i.imgur.com", "imgur.com",
-    "assets.simpleviewinc.com",
-    # add any others you rely on
-}
-MAX_IMAGE_BYTES = 6_000_000  # ~6 MB
-
-def _is_private_host(u: str) -> bool:
-    try:
-        p = urlparse(u)
-        if p.scheme not in {"http", "https"}:
-            return True
-        host = p.hostname or ""
-        infos = socket.getaddrinfo(host, None)
-        for _family, _t, _p, _cn, sockaddr in infos:
-            ip = ipaddress.ip_address(sockaddr[0])
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-                return True
-        return False
-    except Exception:
-        return True
-
-@app.get("/imgproxy", summary="Fetch whitelisted images with SSRF protection")
-async def imgproxy(u: str, _: None = Depends(rate_limit)):
-    u = _clean_url(u)
-    if not u:
-        raise HTTPException(400, "Bad URL")
-
-    if _is_private_host(u):
-        raise HTTPException(403, "Blocked host")
-
-    p = urlparse(u)
-    host = (p.hostname or "").lower()
-    if host not in ALLOWED_IMG_HOSTS:
-        raise HTTPException(403, "Host not allowed")
-
-    # HEAD first (size/type)
-    try:
-        head = await app.state.http.head(u, follow_redirects=True, timeout=5.0)
-    except Exception as e:
-        raise HTTPException(404, f"Fetch failed: {e}")
-
-    ctype = (head.headers.get("content-type") or "").lower()
-    if not ctype.startswith("image/"):
-        raise HTTPException(415, "Not an image")
-
-    clen = int(head.headers.get("content-length") or "0")
-    if clen and clen > MAX_IMAGE_BYTES:
-        raise HTTPException(413, "Image too large")
-
-    # GET
-    r = await app.state.http.get(u, follow_redirects=True, timeout=7.0)
-    if r.status_code == 200 and (r.headers.get("content-type") or "").lower().startswith("image/"):
-        content = r.content if len(r.content) <= MAX_IMAGE_BYTES else r.content[:MAX_IMAGE_BYTES]
-        return StreamingResponse(io.BytesIO(content), media_type=r.headers["content-type"])
-
-    raise HTTPException(404, "Image not available")
+    DETAILS_CACHE.set(key, payload)
+    return payload
