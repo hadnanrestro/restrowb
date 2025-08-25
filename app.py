@@ -1749,9 +1749,29 @@ tailwind.config = {{
     }
     return html, meta
 
+
 # ────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ────────────────────────────────────────────────────────────────────────────
+
+# Root endpoint to prevent 404s on "/"
+@app.get("/", include_in_schema=False)
+async def root():
+    """Simple landing endpoint for service root."""
+    return {
+        "ok": True,
+        "service": "Restronaut Backend",
+        "version": getattr(app, "version", "unknown"),
+        "endpoints": [
+            "/healthz",
+            "/health/openai",
+            "/suggest",
+            "/details",
+            "/generate/template",
+            "/insights/presence",
+            "/insights/audit"
+        ],
+    }
 
 @app.get("/healthz", summary="Liveness probe")
 async def healthz():
