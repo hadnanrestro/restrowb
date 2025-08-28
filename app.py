@@ -20,6 +20,12 @@ try:
     from openai import OpenAI  # SDK v1+
 except Exception:
     OpenAI = None
+
+# Optional: SVG → PNG rasterization
+try:
+    import cairosvg  # type: ignore
+except Exception:
+    cairosvg = None
     
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
@@ -113,6 +119,12 @@ async def lifespan(app: FastAPI):
             log.warning("OPENAI_API_KEY not found in environment at startup")
         else:
             log.info("OPENAI_API_KEY detected (len=%d, masked=%s…%s)", len(k), k[:4], k[-4:])
+        # Report CairoSVG availability (helps debug SVG rasterization path)
+        try:
+            import cairosvg as _csvg  # local import to confirm runtime env
+            log.info("CairoSVG available: version=%s, path=%s", getattr(_csvg, '__version__', 'unknown'), getattr(_csvg, '__file__', 'unknown'))
+        except Exception as e:
+            log.info("CairoSVG NOT available in runtime env (%s)", e)
         yield
     finally:
         await app.state.http.aclose()
@@ -162,11 +174,46 @@ SUGGEST_CACHE = TTLCache(ttl_seconds=CACHE_TTL_SUGGEST)
 DETAILS_CACHE = TTLCache(ttl_seconds=CACHE_TTL_DETAILS)
 IMGSEARCH_CACHE = TTLCache(ttl_seconds=3600)
 
+
 # Cache for extracted logo colors to avoid repeated processing
 COLOR_CACHE = TTLCache(ttl_seconds=24*3600)
 
 # Thread pool for CPU-bound color extraction
 color_extraction_executor = ThreadPoolExecutor(max_workers=4)
+
+def _logo_bytes_to_png_bytes(raw: bytes, content_type: str) -> Optional[bytes]:
+    """Return PNG-encoded bytes from raw logo bytes.
+    - If SVG and cairosvg is available, rasterize to PNG.
+    - Otherwise, attempt Pillow decode and re-encode to PNG.
+    - Returns None if conversion fails.
+    """
+    ctype = (content_type or '').lower()
+    # Handle SVG via CairoSVG when available
+    if 'svg' in ctype:
+        if cairosvg is None:
+            log.warning("SVG logo detected but CairoSVG not installed; skipping color extraction")
+            return None
+        try:
+            return cairosvg.svg2png(bytestring=raw)
+        except Exception as e:
+            log.warning(f"SVG to PNG conversion failed: {e}")
+            return None
+    # For other image types, try Pillow → PNG
+    try:
+        from PIL import Image
+        im = Image.open(BytesIO(raw))
+        if im.mode not in ('RGB', 'RGBA'):
+            im = im.convert('RGBA') if 'A' in im.getbands() else im.convert('RGB')
+        if im.mode == 'RGBA':
+            bg = Image.new('RGB', im.size, (255, 255, 255))
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        buf = BytesIO()
+        im.save(buf, format='PNG')
+        return buf.getvalue()
+    except Exception as e:
+        log.warning(f"Logo PNG convert failed: {e}")
+        return None
 
 def extract_dominant_color(image_data: bytes) -> str:
     """Extract the dominant color from an image using ColorThief."""
@@ -192,8 +239,21 @@ async def get_logo_color(url: str) -> Optional[str]:
         if resp.status_code != 200 or not resp.content:
             COLOR_CACHE.set(ck, None)
             return None
+
+        ctype = (resp.headers.get('content-type') or '').lower()
+        # Must be an image/* or svg+xml
+        if not (ctype.startswith('image/') or 'svg' in ctype):
+            COLOR_CACHE.set(ck, None)
+            return None
+
+        # Convert to PNG bytes (handles SVG via cairosvg; others via Pillow)
+        img_bytes = _logo_bytes_to_png_bytes(resp.content, ctype)
+        if not img_bytes:
+            COLOR_CACHE.set(ck, None)
+            return None
+
         loop = asyncio.get_running_loop()
-        color = await loop.run_in_executor(color_extraction_executor, extract_dominant_color, resp.content)
+        color = await loop.run_in_executor(color_extraction_executor, extract_dominant_color, img_bytes)
         COLOR_CACHE.set(ck, color)
         return color
     except Exception as e:

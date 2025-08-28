@@ -31,6 +31,8 @@ python-multipart
 # Image processing
 Pillow
 colorthief
+cairocffi
+CairoSVG
 
 # Caching
 redis
