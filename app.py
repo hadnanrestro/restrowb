@@ -228,8 +228,20 @@ def darken_color(hex_color: str, factor: float = 0.2) -> str:
         return hex_color
 
 async def best_logo_with_color(details: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], str]:
-    """Pick the best logo and extract a dominant color using ColorThief only."""
+    """Pick the best logo and extract a dominant color using ColorThief only, with validation."""
     logo_url, reason = best_logo(details)
+    if logo_url and not await _logo_is_valid(logo_url, details):
+        # Try a synthesized favicon for the website domain
+        hp = _homepage(details.get('website'))
+        if hp:
+            host = urlparse(hp).netloc
+            candidate = f"https://www.google.com/s2/favicons?sz=256&domain={host}"
+            if await _logo_is_valid(candidate, details):
+                logo_url, reason = candidate, 'validated_favicon'
+            else:
+                logo_url, reason = None, 'invalid_logo_filtered'
+        else:
+            logo_url, reason = None, 'invalid_logo_filtered'
     color = await get_logo_color(logo_url) if logo_url else None
     return logo_url, color, reason
 
@@ -332,10 +344,99 @@ def guess_favicon_urls(homepage: Optional[str]) -> List[str]:
         out.append(hp + "favicon.ico")
     return out
 
-# ────────────────────────────────────────────────────────────────────────────
-# Safe Google Image Search + Unsplash helper
-# ────────────────────────────────────────────────────────────────────────────
+def _host(u: Optional[str]) -> str:
+    try:
+        return (urlparse(u).netloc or '').lower()
+    except Exception:
+        return ''
 
+def _strip_www(h: str) -> str:
+    return h[4:] if h.startswith('www.') else h
+
+async def _logo_is_valid(url: Optional[str], details: Dict[str, Any]) -> bool:
+    """Heuristically verify a logo URL is a small, square-ish icon for this brand."""
+    if not url:
+        return False
+    u = url.strip()
+    if GENERIC_ICON_PAT.search(u):
+        return False
+
+    # Prefer same domain as website, or Google s2 favicon proxy for that domain
+    site = details.get('website') or details.get('map_url') or ''
+    site_host = _strip_www(_host(site))
+    u_host = _strip_www(_host(u))
+
+    # Allow google s2 favicon for our domain, or same-domain favicon/*.png
+    allowed = False
+    if u_host in ('www.google.com', 'google.com') and 's2/favicons' in u:
+        try:
+            q = urlparse(u).query
+            domain_param = None
+            for part in q.split('&'):
+                if part.startswith('domain='):
+                    domain_param = part.split('=', 1)[1].lower()
+                    break
+            if site_host and domain_param:
+                allowed = _strip_www(domain_param) == site_host
+            else:
+                allowed = True
+        except Exception:
+            allowed = True
+    elif site_host and site_host == u_host:
+        allowed = True
+
+    # Fetch and verify it's an image and roughly square, not huge
+    try:
+        resp = await app.state.http.get(u, timeout=6.0, follow_redirects=True)
+        if resp.status_code != 200:
+            return False
+        ctype = (resp.headers.get('content-type') or '').lower()
+        if not ctype.startswith('image/'):
+            return False
+        if not resp.content:
+            return False
+        # Geometry checks
+        try:
+            from PIL import Image
+            im = Image.open(BytesIO(resp.content))
+            w, h = im.size
+            if w <= 0 or h <= 0:
+                return False
+            ratio = max(w, h) / float(min(w, h))
+            if ratio > 1.75:   # very non-square -> likely not a logo
+                return False
+            if max(w, h) < 32:  # too tiny
+                return False
+            if max(w, h) > 1024:  # too large -> likely a photo
+                return False
+        except Exception:
+            # If PIL fails, accept based on headers only
+            pass
+        return True
+    except Exception:
+        return False
+
+def _score_logo_candidate(url: str, reason: str, details: Dict[str, Any]) -> int:
+    """Score a candidate; higher is better."""
+    base = 0
+    if reason == 'icon_mask_base_uri':
+        base = 95
+    elif reason == 'website_favicon':
+        base = 88
+    elif reason == 'icon_non_generic':
+        base = 80
+    elif reason == 'maps_url_favicon':
+        base = 72
+    elif reason == 'fallback_first':
+        base = 60
+
+    site_host = _strip_www(_host(details.get('website') or details.get('map_url') or ''))
+    u_host = _strip_www(_host(url))
+    if site_host and u_host == site_host:
+        base += 8         # same domain bonus
+    if 's2/favicons' in (url or '') and site_host:
+        base += 5         # Google s2 favicon for our domain
+    return base
 # ────────────────────────────────────────────────────────────────────────────
 # Safe Google Image Search + Unsplash helper
 # ────────────────────────────────────────────────────────────────────────────
@@ -1372,23 +1473,41 @@ class TemplateOut(BaseModel):
     meta: Dict[str, Any]
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# View helpers (logo pick, hours, reviews 5★ only)
-# ────────────────────────────────────────────────────────────────────────────
 def best_logo(details: Dict[str, Any]) -> Tuple[Optional[str], str]:
-    for (u, score, reason) in details.get("logo_debug") or []:
-        if "sz=" in u:
+    # Build a scored candidate list from debug and simple candidates
+    cands_dbg = details.get("logo_debug") or []  # (url, score, reason)
+    scored: List[Tuple[int, str, str]] = []
+    for (u, _s, r) in cands_dbg:
+        if GENERIC_ICON_PAT.search(u or ''):
+            continue
+        scored.append((_score_logo_candidate(u, r, details), u, r))
+    for u in (details.get("logo_url_candidates") or []):
+        if GENERIC_ICON_PAT.search(u or ''):
+            continue
+        scored.append((_score_logo_candidate(u, 'fallback_first', details), u, 'fallback_first'))
+
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    # Quick sanity reject tiny favicons
+    for _score, url, reason in scored:
+        if 'sz=' in url:
             try:
-                sz = int(u.split("sz=")[1].split("&")[0])
+                sz = int(url.split('sz=')[1].split('&')[0])
                 if sz < 64:
                     continue
             except Exception:
                 pass
-        if GENERIC_ICON_PAT.search(u):
-            continue
-        return u, reason
-    cands = details.get("logo_url_candidates") or []
-    return (cands[0], "fallback_first") if cands else (None, "none")
+        # Return the best candidate; async validation happens in best_logo_with_color()
+        return url, reason
+
+    # Last resort: synthesize s2 favicon from website domain
+    hp = _homepage(details.get('website'))
+    if hp:
+        host = urlparse(hp).netloc
+        fallback = f"https://www.google.com/s2/favicons?sz=256&domain={host}"
+        return fallback, 'generated_favicon'
+
+    return None, 'none'
 
 def hours_list(details: Dict[str, Any]) -> List[Tuple[str,str]]:
     wt = details.get("hours_text") or []
