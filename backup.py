@@ -2364,4 +2364,3 @@ async def generate_mobile_template(
     
 
 
-    

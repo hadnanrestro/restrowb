@@ -1,5 +1,5 @@
 # app.py
-import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging
+import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging, json
 from urllib.parse import urlparse, quote
 from typing import Optional, Literal, Dict, Any, List, Tuple
 from mobile import build_mobile_app_html
@@ -28,6 +28,21 @@ try:
 except Exception:
     cairosvg = None
     
+try:
+    import json5
+except ImportError:
+    json5 = None
+
+try:
+    from fix_busted_json import repair_json as fix_busted_repair
+except ImportError:
+    fix_busted_repair = None
+
+try:
+    from json_repair import repair_json as json_repair_repair
+except ImportError:
+    json_repair_repair = None
+        
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 GOOGLE_API_KEY  = os.getenv("GOOGLE_PLACES_API_KEY", "")
 YELP_API_KEY    = os.getenv("YELP_API_KEY", "")  # optional fallback
@@ -145,14 +160,7 @@ async def build_mobile_app_html_legacy(details: Dict[str, Any], *, sales_cta: bo
 
     # Device frame/circular hero (legacy)
     hero_img = MOBILE_HERO_UNIVERSAL
-    # ... rest of the legacy function body ...
-    # (Intentionally left unchanged; actual implementation would be here.)
-    # If this function ever called itself recursively:
-    # return await build_mobile_app_html_legacy(...)
-    #
-    # For this patch, keep everything else unchanged.
-    #
-    # Placeholder return to avoid syntax error:
+
     return "", {}
 # ────────────────────────────────────────────────────────────────────────────
 # App & shared HTTP client (lifespan)
@@ -824,7 +832,7 @@ CUISINE_ASSETS: Dict[str, Dict[str, Any]] = {
         "hero": [],
         "menu": [
             {"name":"Chicken Tikka Masala","desc":"Creamy tomato sauce, basmati rice","price":"$14.99","img": "gq:Chicken Tikka Masala indian"},
-            {"name":"Lamb Biryani","desc":"Fragrant basmati rice, spices","price":"$16.99","img": "gq:Lamb Biryani indian"},
+            {"name":"Chicken Biryani","desc":"Fragrant basmati rice, spices","price":"$16.99","img": "gq:Chicken Biryani indian"},
             {"name":"Garlic Naan","desc":"Fresh baked bread","price":"$3.99","img": "gq:Garlic Naan indian"}
         ]
     },
@@ -1274,29 +1282,8 @@ async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Opti
     except Exception:
         pass
 
-    # Infer whether they have a mobile app (heuristic)
-    has_mobile_app = False
-    try:
-        urls_to_check = [details.get('website') or '', details.get('map_url') or '']
-        def _looks_like_app_link(u: str) -> bool:
-            s = (u or '').lower()
-            return ('apps.apple.com' in s) or ('play.google.com' in s) or ('/app' in s) or (s.split('://')[-1].startswith('app.'))
-        if any(_looks_like_app_link(u) for u in urls_to_check):
-            has_mobile_app = True
-        else:
-            for rv in reviews:
-                t = (rv.get('text') or '').lower()
-                if ('mobile app' in t) or re.search(r'\bthe app\b', t) or re.search(r'\bapp\b', t):
-                    has_mobile_app = True
-                    break
-    except Exception:
-        pass
-
-    # Explicit reason if mobile app not found
-    if not has_mobile_app:
-        # avoid duplicate phrasing if already added by earlier logic
-        if not any("mobile app" in r.lower() for r in reasons):
-            reasons.append("Mobile app availability not found")
+    # Skip mobile‑app inference per request; keep website check above.
+    has_mobile_app = None
 
     # Brand signal (logo color)
     try:
@@ -1340,7 +1327,6 @@ async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Opti
         "review_count": reviews_ct,
         "most_recent_review_days": most_recent_days,
         "has_website": bool(website),
-        "has_mobile_app": has_mobile_app,
     }
     return {"score": score, "level": level, "reasons": reasons, "metrics": metrics}
 
@@ -1412,6 +1398,286 @@ async def ai_presence_oneliner(details: Dict[str, Any], prescore: Dict[str, Any]
     if reasons:
         return _sanitize(f"Your online presence is slipping, {reasons[0].rstrip('.')}; let us fix it with a fast, modern site that converts more customers.")
     return "A stronger website and clearer information can win you more customers; let us help you upgrade quickly."
+
+
+def auto_close_json(content: str) -> str:
+    repaired = content.strip()
+    open_curly = repaired.count("{")
+    close_curly = repaired.count("}")
+    open_square = repaired.count("[")
+    close_square = repaired.count("]")
+    if open_square > close_square:
+        repaired += "]" * (open_square - close_square)
+    if open_curly > close_curly:
+        repaired += "}" * (open_curly - close_curly)
+    repaired = re.sub(r",\s*}", "}", repaired)
+    repaired = re.sub(r",\s*\]", "]", repaired)
+    return repaired
+
+async def ai_presence_insights(details: Dict[str, Any],
+                                prescore: Dict[str, Any],
+                                nearby: List[Dict[str, Any]],
+                                complaints: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return OpenAI-generated 5+ structured insights; fails loudly if not valid."""
+    if not os.getenv("OPENAI_API_KEY") or OpenAI is None:
+        log.error("ai_presence_insights: OpenAI API key not set or OpenAI SDK missing")
+        raise HTTPException(502, "OpenAI API unavailable for insights")
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        payload = {
+            "business_id": details.get("id"),
+            "business_name": details.get("name"),
+            "presence": prescore,
+            "nearby": nearby[:10],
+            "reviews": complaints,
+        }
+        system = (
+            "You are an analyst. Return ONLY valid JSON with at least 5 distinct problems, "
+            "strictly following this schema: "
+            "{business_id (string), business_name (string), summary (string), "
+            "problems: [{title (string), evidence (list of strings), "
+            "fix_steps (list of strings)}], "
+            "\n"
+            "SCHEMA RULES: "
+            "- fix_steps must be a list of one-line strategies like: 'We will improve this for you ...'. "
+            "- No room for mistake, the information must be accurate."
+            "- If URL is missing/null, return null. "
+            "- At least 5 problems must be included."
+        )
+        user = (
+            "Generate insights for this business. "
+            "Focus ONLY on online presence and IT-related issues (website, app, SEO, listings, branding). "
+            "Each fix must be ONE line only, describing our strategy professionally (e.g., 'We will improve this for you by .. or No worries, we got you'). "
+            "Problems >= 5. "
+            "Here is payload:\n" + json.dumps(payload)
+        )
+        chat = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=1200,
+        )
+        # If SDK gives parsed object, use it
+        parsed = getattr(chat.choices[0].message, "parsed", None)
+        if parsed is not None:
+            return parsed
+
+        content = (chat.choices[0].message.content or "").strip()
+
+        # Strip code fences if any
+        if content.startswith("```"):
+            content = content.strip('` \n')
+
+        # Extract JSON between first '{' and last '}' if needed
+        if not content.startswith("{"):
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                content = content[start:end+1]
+
+        # Attempt strict parse
+        try:
+            return json.loads(content)
+        except Exception as e1:
+            log.warning(f"ai_presence_insights: strict JSON parse failed: {e1}")
+
+        # Attempt json5 fallback
+        if json5 is not None:
+            try:
+                return json5.loads(content)
+            except Exception as e2:
+                log.error(f"ai_presence_insights: json5 fallback failed: {e2}")
+
+        # Attempt fix-busted-json fallback
+        if fix_busted_repair is not None:
+            try:
+                repaired = fix_busted_repair(content)
+                # possibly re-extract JSON block
+                if not repaired.startswith("{"):
+                    s = repaired.find("{")
+                    e = repaired.rfind("}")
+                    if s != -1 and e != -1 and e > s:
+                        repaired = repaired[s:e+1]
+                return json.loads(repaired)
+            except Exception as e3:
+                log.error(f"ai_presence_insights: fix-busted-json fallback failed: {e3}")
+
+        # Attempt json_repair fallback
+        if json_repair_repair is not None:
+            try:
+                repaired = json_repair_repair(content)
+                if not repaired.startswith("{"):
+                    s = repaired.find("{")
+                    e = repaired.rfind("}")
+                    if s != -1 and e != -1 and e > s:
+                        repaired = repaired[s:e+1]
+                return json.loads(repaired)
+            except Exception as e4:
+                log.error(f"ai_presence_insights: json_repair fallback failed: {e4}")
+
+        # Final simple heuristics repair
+        repaired2 = content
+        # If odd number of double quotes, append a closing quote
+        if repaired2.count('"') % 2 == 1:
+            repaired2 = repaired2 + '"'
+        # Remove trailing commas before } or ]
+        repaired2 = re.sub(r",\s*}", "}", repaired2)
+        repaired2 = re.sub(r",\s*\]", "]", repaired2)
+
+        try:
+            return json.loads(repaired2)
+        except Exception as e5:
+            log.error(f"ai_presence_insights: final heuristic repair failed: {e5} | repaired2_content={repaired2!r}")
+
+        # Final fallback: auto_close_json
+        try:
+            repaired3 = auto_close_json(content)
+            result = json.loads(repaired3)
+            log.warning("ai_presence_insights: auto_close repair applied")
+            return result
+        except Exception as e6:
+            log.error(f"ai_presence_insights: auto_close_json fallback failed: {e6} | repaired3_content={repaired3!r}")
+
+        # If all parsing fails, raise error
+        raise HTTPException(502, f"OpenAI returned invalid JSON for insights: last error {e1}")
+
+    except Exception as e_outer:
+        log.error(f"ai_presence_insights unavailable: {e_outer}")
+        raise HTTPException(502, f"OpenAI insights failed: {e_outer}")
+
+def _local_insights_fallback(details: Dict[str, Any], prescore: Dict[str, Any], nearby: List[Dict[str, Any]], complaints: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Deterministic, on-box insights so the response is never empty."""
+    name = details.get("name") or "This restaurant"
+    bid = details.get("id") or "unknown"
+    rating = details.get("rating")
+    rev_ct = details.get("review_count")
+    gallery_ct = len(details.get("gallery") or [])
+    most_recent_days = prescore.get("metrics", {}).get("most_recent_review_days")
+    website = details.get("website") or ""
+    reasons = prescore.get("reasons") or []
+
+    problems: List[Dict[str, Any]] = []
+    def add(title, sev, impact, ev, steps, owner="marketing", eta=2, quick=True):
+        problems.append({
+            "title": title,
+            "severity": sev,
+            "expected_impact": impact,
+            "evidence": ev,
+            "fix_steps": steps,
+            "quick_win": quick,
+            "owner": owner,
+            "eta_hours": eta,
+        })
+
+    # 1) Website quality/clarity unknown
+    add(
+        "Website performance/clarity unknown",
+        "medium",
+        "conversion",
+        [f"metrics.has_website={bool(website)}", "reason present: Website performance/clarity unknown—optimize for mobile speed and menu visibility"],
+        [
+            "Run PageSpeed Insights and Lighthouse on homepage and menu pages",
+            "Add prominent CTA: Order/Call/Reserve in header and hero",
+            "Ensure menu section renders fast (<2s LCP) and is readable on mobile",
+            "Compress hero images and lazy-load below the fold",
+        ],
+    )
+
+    # 2) Few/broken photos
+    if gallery_ct < 3:
+        add(
+            "Too few photos in Google gallery",
+            "medium", "trust",
+            [f"gallery count={gallery_ct}"],
+            [
+                "Upload 8–12 high quality interior/food photos to Google Business Profile",
+                "Set website hero to use Google photos with onerror SVG fallback",
+                "Add Pexels fallback in builder when Google is blocked by referrer",
+            ],
+        )
+
+    # 3) Review freshness
+    if (most_recent_days is None) or (isinstance(most_recent_days, int) and most_recent_days > 30):
+        add(
+            "Low recent review activity",
+            "medium", "trust",
+            [f"most_recent_review_days={most_recent_days}"],
+            [
+                "Run a 2‑week in‑store ask: place QR to Google review link",
+                "Reply to last 5 reviews to signal active management",
+            ],
+        )
+
+    # 4) Rating/volume risk
+    if (rating is not None and float(rating) < 4.3) or (rev_ct is not None and int(rev_ct) < 200):
+        add(
+            "Ratings/review volume can be improved",
+            "medium", "trust",
+            [f"rating={rating}", f"review_count={rev_ct}"],
+            [
+                "Respond to recent 1★ reviews with remediation (refund/replacement where appropriate)",
+                "Feature 5★ quotes on website homepage and social",
+            ],
+        )
+
+    # 5) Chain competition
+    if any('chain' in (r or '').lower() for r in reasons):
+        add(
+            "Nearby chain competition is high",
+            "high", "traffic",
+            ["reason present: Nearby chain competition is high"],
+            [
+                "Differentiate hero with signature dishes and unique value (pricing/portion/story)",
+                "Add schema.org/LocalBusiness + Menu to improve SERP visibility",
+                "Run local ads targeting competitor brand + cuisine keywords",
+            ],
+        )
+
+    # 6) Negative review signal (if any complaints provided)
+    if complaints:
+        c1 = complaints[0]
+        add(
+            "Address recent 1★ complaints",
+            "high", "trust",
+            [f"sample: '{(c1.get('text') or '')[:160]}…'"],
+            [
+                "Investigate root cause with store manager and log corrective action",
+                "Reach out to reviewer with apology and remedy (refund/replacement)",
+                "Publish updated hygiene/process note on website if relevant",
+            ], owner="ops", eta=4, quick=False
+        )
+
+    # Ensure at least 5 items
+    while len(problems) < 5:
+        add(
+            "Brand consistency can be improved online",
+            "low", "conversion",
+            ["reason present: Brand consistency can be improved online"],
+            [
+                "Extract brand color/logo and apply across site buttons/links",
+                "Add favicon and social share images",
+            ],
+        )
+
+    # Competitors (top 3 nearby)
+    comps = []
+    for c in (nearby or [])[:3]:
+        comps.append({
+            "name": c.get("name"),
+            "rating": c.get("rating"),
+            "map_url": c.get("map_url"),
+            "note": "Review their photo style and top dishes for inspiration",
+        })
+
+    return {
+        "business_id": bid,
+        "business_name": name,
+        "summary": f"Presence score {prescore.get('score')} ({prescore.get('level')}). Website={'present' if website else 'missing'}.",
+        "problems": problems,
+        "mobile_app": {"status": "not_applicable", "ios_url": None, "android_url": None, "proof_text": "mobile app check disabled", "connect_steps": []},
+        "competitors": comps,
+    }
 
 # ────────────────────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────
@@ -1969,8 +2235,11 @@ async def insights_presence(
     # Presence score (already includes recent 1★ keyword penalty if any)
     prescore = await compute_online_presence(details, keyword_list=kw_list or None, recent_days=90)
 
-    # One-line AI pitch
+    # One-line AI pitch + optional multi-insights
     ai_line = await ai_presence_oneliner(details, prescore, complaints)
+    ai_multi = await ai_presence_insights(details, prescore, nearby, complaints)
+    if ai_multi is None:
+        ai_multi = _local_insights_fallback(details, prescore, nearby, complaints)
 
     return {
         "id": details.get("id"),
@@ -1979,6 +2248,7 @@ async def insights_presence(
         "presence": prescore,
         "reviews": complaints,     # exactly 3
         "ai_oneline": ai_line,     # persuasive one-liner
+        "insights": ai_multi,      # optional structured insights (may be null)
     }
 @app.get("/details", summary="Get business details")
 async def details(
@@ -2090,7 +2360,3 @@ async def generate_mobile_template(
     except Exception as e:
         log.error(f"mobile_template build failed: {e}")
         raise HTTPException(500, "Failed to generate mobile template")
-    
-
-
-    
