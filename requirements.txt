@@ -33,8 +33,7 @@ Pillow
 colorthief
 cairocffi
 CairoSVG
-json
-json5
+# Caching 
 logging
 redis
 
