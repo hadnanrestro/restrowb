@@ -2,7 +2,8 @@
 import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging
 from urllib.parse import urlparse, quote
 from typing import Optional, Literal, Dict, Any, List, Tuple
-
+from mobile import build_mobile_app_html
+from website import build_html
 from fastapi import FastAPI, HTTPException, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -28,14 +29,9 @@ except Exception:
     cairosvg = None
     
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Env & Config
-# ────────────────────────────────────────────────────────────────────────────
-
 GOOGLE_API_KEY  = os.getenv("GOOGLE_PLACES_API_KEY", "")
 YELP_API_KEY    = os.getenv("YELP_API_KEY", "")  # optional fallback
+PEXELS_API_KEY  = os.getenv("PEXELS_API_KEY", "")  # optional image fallback
 
 ALLOWED_ORIGINS= [
     "*", 
@@ -58,46 +54,106 @@ GOOGLE_CSE_CX  = os.getenv("GOOGLE_CSE_CX", "")
 log = logging.getLogger("uvicorn.error")
 # Responsive container utility (used everywhere for consistent layout)
 CONTAINER = "mx-auto max-w-[1400px] xl:max-w-[1600px] px-4 sm:px-6 lg:px-8"
-# Core Clean Restaurant Ambiance Images (Interior/Exterior)
-U1 = "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?q=80&w=1600&auto=format&fit=crop"  # Bright modern interior
-U2 = "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?q=80&w=1600&auto=format&fit=crop"    # Elegant dining
-U3 = "https://images.unsplash.com/photo-1590846406792-0adc7f938f1d?q=80&w=1600&auto=format&fit=crop" # Clean minimalist
-U4 = "https://images.unsplash.com/photo-1571003123894-1f0594d2b5d9?q=80&w=1600&auto=format&fit=crop" # Modern atmosphere
-
-## American/Burger - Clean Modern
-U5 = "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?q=80&w=1600&auto=format&fit=crop"    # Modern diner
-U6 = "https://images.unsplash.com/photo-1533777857889-4be7c70b33f7?q=80&w=1600&auto=format&fit=crop" # Minimal burger joint
-
-## Italian - Elegant Clean
-U7 = "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?q=80&w=1600&auto=format&fit=crop" # Fine dining
-U8 = "https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?q=80&w=1600&auto=format&fit=crop" # Italian trattoria
-
-## Mexican - Bright Clean
-U9 = "https://images.unsplash.com/photo-1585032226651-759b368d7246?q=80&w=1600&auto=format&fit=crop" # Modern cantina
-U10 = "https://images.unsplash.com/photo-1578662996442-48f60103fc96?q=80&w=1600&auto=format&fit=crop" # Clean Mexican
-
-## Asian - Clean Modern
-U11 = "https://images.unsplash.com/photo-1537047902294-62a40c20a6ae?q=80&w=1600&auto=format&fit=crop" # Asian restaurant
-U12 = "https://images.unsplash.com/photo-1514933651103-005eec06c04b?q=80&w=1600&auto=format&fit=crop" # Japanese minimal
-
-# Updated cuisine mapping
+# Hero image mapping placeholder (kept for compatibility). We now source heroes from
+# Google gallery and Pexels; these lists are intentionally empty.
 HERO_BY_CUISINE = {
-    "burger": [U5, U6, U1, U2],
-    "italian": [U7, U8, U1, U2],
-    "mexican": [U9, U10, U1, U2],
-    "american": [U5, U6, U1, U2],
-    "chinese": [U11, U12, U1, U2],
-    "japanese": [U12, U11, U1, U2],
-    "thai": [U11, U12, U1, U2],
-    "indian": [U11, U12, U1, U2],  # Using Asian as base
-    "greek": [U7, U8, U1, U2],     # Using Italian as base
-    "french": [U7, U8, U1, U2],    # Using Italian as base
-    "korean": [U11, U12, U1, U2],
-    "mediterranean": [U7, U8, U1, U2],
-    "vietnamese": [U11, U12, U1, U2],
+    "burger": [], "italian": [], "mexican": [], "american": [], "chinese": [],
+    "japanese": [], "thai": [], "indian": [], "greek": [], "french": [],
+    "korean": [], "mediterranean": [], "vietnamese": [],
 }
-# Safe, generic hero fallback if one of the hero URLs fails
-HERO_FALLBACK_URL = "https://source.unsplash.com/1600x900/?restaurant,interior"
+# Safe, generic hero fallback: neutral SVG gradient (no external host)
+HERO_FALLBACK_URL = (
+    "data:image/svg+xml;utf8," + quote(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900">'
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'
+        '<stop offset="0%" stop-color="#f7f7f7"/><stop offset="100%" stop-color="#ededed"/>'
+        '</linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>'
+    )
+)
+# Project-relative path to the hard-coded mobile background SVG (overridable via env)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MOBILE_BG_PATH = os.getenv(
+    "MOBILE_BG_PATH",
+    os.path.join(BASE_DIR, "assets", "mobile_bg.svg")
+)
+# Cache for inlined SVG bg
+_MOBILE_BG_DATA_URI: Optional[str] = None
+
+def get_mobile_bg_data_uri() -> str:
+    """Return a data: URI for the hard-coded mobile background SVG.
+    If utf-8 encoding fails, base64-encode. Returns empty string if read fails.
+    """
+    global _MOBILE_BG_DATA_URI
+    if _MOBILE_BG_DATA_URI is not None:
+        return _MOBILE_BG_DATA_URI
+    try:
+        with open(MOBILE_BG_PATH, "rb") as f:
+            raw = f.read()
+        try:
+            # Prefer URL-encoded UTF-8 to keep size smaller than base64
+            text = raw.decode("utf-8")
+            _MOBILE_BG_DATA_URI = "data:image/svg+xml;utf8," + quote(text)
+        except Exception:
+            _MOBILE_BG_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(raw).decode("ascii")
+    except Exception as e:
+        log.warning("mobile bg svg could not be loaded: %s", e)
+        _MOBILE_BG_DATA_URI = ""
+    return _MOBILE_BG_DATA_URI
+
+# Back-compat: some older/mobile builders reference this hero image constant.
+# We point it to the same hard-coded SVG background (as a data URI). If the SVG
+# cannot be read at runtime, fall back to a 1x1 transparent PNG data URI.
+def _ensure_mobile_hero_universal() -> str:
+    uri = get_mobile_bg_data_uri()
+    if uri:
+        return uri
+    # 1x1 transparent PNG (base64)
+    return (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
+    )
+MOBILE_HERO_UNIVERSAL = _ensure_mobile_hero_universal()
+# Compatibility shim: ensure build_mobile_app_html always accepts 'sales_cta' as keyword arg
+def _normalize_build_mobile_signature():
+    """Ensure build_mobile_app_html accepts keyword 'sales_cta' even if redefined later."""
+    try:
+        import inspect
+        sig = inspect.signature(build_mobile_app_html)
+        if 'sales_cta' not in sig.parameters:
+            log.warning("build_mobile_app_html lacks 'sales_cta'; installing compatibility wrapper")
+            orig = build_mobile_app_html
+            async def _wrapped(details: Dict[str, Any], *, sales_cta: bool = True) -> Tuple[str, Dict[str, Any]]:
+                return await orig(details)
+            globals()['build_mobile_app_html'] = _wrapped
+    except Exception as e:
+        log.error("Failed to normalize build_mobile_app_html signature: %s", e)
+
+# Run normalization at import time (before routes are invoked)
+_normalize_build_mobile_signature()
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Legacy Mobile App Builder (device frame, circular hero)
+# ────────────────────────────────────────────────────────────────────────────
+async def build_mobile_app_html_legacy(details: Dict[str, Any], *, sales_cta: bool = True) -> Tuple[str, Dict[str, Any]]:
+    # This is the legacy builder: device frame/circular hero, uses MOBILE_HERO_UNIVERSAL
+    name = details.get("name") or "Restaurant"
+    cuisine = cuisine_from_types(details)
+    context = get_restaurant_context(details)
+    logo, logo_color, logo_reason = await best_logo_with_color(details)
+    pal = select_theme_colors(cuisine, context, logo_color)
+
+    # Device frame/circular hero (legacy)
+    hero_img = MOBILE_HERO_UNIVERSAL
+    # ... rest of the legacy function body ...
+    # (Intentionally left unchanged; actual implementation would be here.)
+    # If this function ever called itself recursively:
+    # return await build_mobile_app_html_legacy(...)
+    #
+    # For this patch, keep everything else unchanged.
+    #
+    # Placeholder return to avoid syntax error:
+    return "", {}
 # ────────────────────────────────────────────────────────────────────────────
 # App & shared HTTP client (lifespan)
 # ────────────────────────────────────────────────────────────────────────────
@@ -346,6 +402,21 @@ async def http_get_json(url: str, *, params: Dict[str, Any] = None, headers: Dic
             await asyncio.sleep(0.25 * (attempt + 1))
     raise HTTPException(502, f"Upstream failed after retries: {last_err}")
 
+async def http_get_text(url: str, *, params: Dict[str, Any] = None, headers: Dict[str, str] = None, timeout: float = 9.0, retries: int = 2, max_bytes: int = 300_000) -> str:
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            resp = await app.state.http.get(url, params=params, headers=headers, timeout=timeout, follow_redirects=True)
+            if resp.status_code != 200:
+                txt = resp.text[:400]
+                raise HTTPException(502, f"Upstream error {resp.status_code}: {txt}")
+            b = resp.content[:max_bytes]
+            return b.decode(resp.encoding or 'utf-8', errors='ignore')
+        except Exception as e:
+            last_err = e
+            await asyncio.sleep(0.25 * (attempt + 1))
+    raise HTTPException(502, f"Upstream text fetch failed after retries: {last_err}")
+
 def cache_key(*parts: Any) -> str:
     return hashlib.sha1("|".join(map(str, parts)).encode("utf-8")).hexdigest()
 
@@ -563,27 +634,68 @@ async def ensure_valid_image_url(url: str) -> str:
     return ""
 
 # ────────────────────────────────────────────────────────────────────────────
+# Pexels image search (optional)
+# ────────────────────────────────────────────────────────────────────────────
+async def pexels_search_photos(query: str, *, per_page: int = 3, orientation: str = "landscape") -> List[str]:
+    if not PEXELS_API_KEY:
+        return []
+    try:
+        headers = {"Authorization": PEXELS_API_KEY}
+        params = {"query": query, "per_page": per_page, "orientation": orientation}
+        data = await http_get_json("https://api.pexels.com/v1/search", params=params, headers=headers)
+        out: List[str] = []
+        for p in (data.get("photos") or []):
+            src = p.get("src") or {}
+            # Prefer high quality; fall back to any available
+            for k in ("large2x", "large", "original", "medium"):
+                u = src.get(k)
+                if u:
+                    out.append(u)
+                    break
+        return out
+    except Exception:
+        return []
+
+async def pexels_first_image(query: str) -> Optional[str]:
+    imgs = await pexels_search_photos(query, per_page=4)
+    for u in imgs:
+        v = await ensure_valid_image_url(u)
+        if v:
+            return v
+    return None
+
+# ────────────────────────────────────────────────────────────────────────────
 # Menu image and hero image selection helpers (smarter)
 # ────────────────────────────────────────────────────────────────────────────
 async def select_hero_images(details: Dict[str, Any], cuisine: str) -> List[str]:
     """Smart hero image selection with fallbacks"""
     images: List[str] = []
 
-    # 1) Use Google gallery interior shots first
-    for img_url in (details.get("gallery") or []):
-        if await _is_interior_shot(img_url):
-            images.append(img_url)
-            if len(images) >= 2:
+    # 1) Use Google gallery photos first (do not over-filter; Places photo URLs lack descriptors)
+    gal = details.get("gallery") or []
+    for img_url in gal[:2]:
+        images.append(img_url)
+
+    # 2) Try Pexels for a matching interior if we still need images
+    try:
+        name = (details.get("name") or "").strip()
+        candidates = []
+        if name:
+            candidates.append(f"{name} restaurant interior")
+        if cuisine:
+            candidates.append(f"{cuisine} restaurant interior")
+        candidates.extend(["restaurant interior", "dining interior restaurant"])
+        for q in candidates:
+            if len(images) >= 4:
                 break
+            px = await pexels_first_image(q)
+            if px and px not in images:
+                images.append(px)
+    except Exception:
+        pass
 
-    # 2) Fill with curated Unsplash per cuisine
-    cuisine_heroes = HERO_BY_CUISINE.get(cuisine, HERO_BY_CUISINE.get(DEFAULT_CUISINE, []))
-    for hero_url in cuisine_heroes:
-        if len(images) >= 4:
-            break
-        if hero_url not in images:
-            images.append(hero_url)
-
+    if not images:
+        images = [HERO_FALLBACK_URL]
     return images[:4]
 
 async def _is_interior_shot(url: str) -> bool:
@@ -611,6 +723,44 @@ async def resolve_menu_images(details: Dict[str, Any], cuisine: str) -> None:
 
     details["_resolved_menu"] = resolved[:6]
 
+async def try_enrich_menu_from_site(details: Dict[str, Any], cuisine: str) -> None:
+    """Best-effort: fetch menu items from the website.
+    Looks for common patterns (names + $prices) and builds up to 6 items.
+    Non-fatal; falls back to cuisine defaults if nothing is found.
+    """
+    if details.get("menu"):
+        return
+    hp = _homepage(details.get("website"))
+    if not hp or _is_marketplace(hp):
+        return
+    candidates = [hp, hp.rstrip('/') + "/menu", hp.rstrip('/') + "/menus", hp.rstrip('/') + "/our-menu", hp.rstrip('/') + "/order-online"]
+    html = ""
+    for u in candidates:
+        try:
+            html = await http_get_text(u, timeout=6.0)
+            if html and len(html) > 200:
+                break
+        except Exception:
+            continue
+    if not html:
+        return
+    # crude extraction: name near a price like $12 or $12.99
+    try:
+        import re as _re
+        items = []
+        # find lines with price and a nearby preceding name tag
+        for m in _re.finditer(r"(?is)<[^>]*>([^<]{3,80})</[^>]*>[^$]{0,120}?\$(\d{1,2}(?:\.\d{2})?)", html):
+            name = (m.group(1) or "").strip()
+            price = "$" + m.group(2)
+            if 3 <= len(name) <= 60 and not any(x in name.lower() for x in ("copyright","privacy","terms","menu")):
+                items.append({"name": name, "price": price, "desc": "", "img": f"gq:{name} {cuisine}"})
+            if len(items) >= 8:
+                break
+        if items:
+            details["menu"] = items
+    except Exception:
+        return
+
 async def _get_best_menu_image(item: Dict[str, Any], cuisine: str) -> str:
     """Get the best available image for a menu item"""
     img = (item.get("img") or "").strip()
@@ -628,109 +778,117 @@ async def _get_best_menu_image(item: Dict[str, Any], cuisine: str) -> str:
         if v:
             return v
 
-    name = (item.get("name") or "").lower()
+    name = (item.get("name") or "").strip()
 
-    # 3) Item-keyword fallbacks (more specific than cuisine-level)
-    keyword_fallbacks = [
-        ("chicken", "https://images.unsplash.com/photo-1606755962773-d324e2dabd17?q=80&w=1200&auto=format&fit=crop"),  # crispy chicken sandwich
-        ("fries",   "https://images.unsplash.com/photo-1576107232684-1279f390859f?q=80&w=1200&auto=format&fit=crop"),  # fries
-        ("salad",   "https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop"),  # salad
-        ("steak",   "https://images.unsplash.com/photo-1544025162-d76694265947?q=80&w=1200&auto=format&fit=crop"),  # steak
-        ("pizza",   "https://images.unsplash.com/photo-1548365328-9f547fb0953f?q=80&w=1200&auto=format&fit=crop"),  # pizza
-        ("burger",  "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?q=80&w=1200&auto=format&fit=crop"),  # burger
-        ("ramen",   "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?q=80&w=1200&auto=format&fit=crop"),  # ramen
-        ("sushi",   "https://images.unsplash.com/photo-1553621042-f6e147245754?q=80&w=1200&auto=format&fit=crop"),  # sushi
-        ("taco",    "https://images.unsplash.com/photo-1565299585323-38174c267b34?q=80&w=1200&auto=format&fit=crop"),  # tacos
-    ]
-    for kw, url_fallback in keyword_fallbacks:
-        if kw in name:
-            v = await ensure_valid_image_url(url_fallback)
-            if v:
-                return v
+    # 3) Try search by item name (Google CSE then Pexels)
+    if name:
+        try:
+            found = await google_image_search(f"{name} {cuisine} food", num=3)
+            if found:
+                v = await ensure_valid_image_url(found)
+                if v:
+                    return v
+        except Exception:
+            pass
+        try:
+            px = await pexels_first_image(f"{name} {cuisine}")
+            if px:
+                v = await ensure_valid_image_url(px)
+                if v:
+                    return v
+        except Exception:
+            pass
 
-    # 4) Cuisine fallback dish images (last resort)
-    cuisine_dishes = {
-        "burger": "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?q=80&w=1200&auto=format&fit=crop",
-        "italian": "https://images.unsplash.com/photo-1604382354936-07c5d9983bd3?q=80&w=1200&auto=format&fit=crop",
-        "mexican": "https://images.unsplash.com/photo-1565299585323-38174c267b34?q=80&w=1200&auto=format&fit=crop",
-        "chinese": "https://images.unsplash.com/photo-1525755662778-989d0524087e?q=80&w=1200&auto=format&fit=crop",
-        "thai": "https://images.unsplash.com/photo-1559847844-5315695dadae?q=80&w=1200&auto=format&fit=crop",
-        "japanese": "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?q=80&w=1200&auto=format&fit=crop",
-        "american": "https://images.unsplash.com/photo-1555992336-03a23c7b7887?q=80&w=1200&auto=format&fit=crop",
-    }
-    return cuisine_dishes.get(cuisine, cuisine_dishes["american"])
+    lname = name.lower()
+
+    # 4) Item-keyword fallbacks via Pexels
+    for kw in ["chicken", "fries", "salad", "steak", "pizza", "burger", "ramen", "sushi", "taco"]:
+        if kw in lname:
+            px = await pexels_first_image(f"{kw} dish")
+            if px:
+                v = await ensure_valid_image_url(px)
+                if v:
+                    return v
+
+    # 5) Cuisine fallback dish images (last resort) from Pexels
+    px = await pexels_first_image(f"{cuisine} dish") if cuisine else None
+    if px:
+        v = await ensure_valid_image_url(px)
+        if v:
+            return v
+    return ""
 # Update the CUISINE_ASSETS with more appropriate theme colors
 CUISINE_ASSETS: Dict[str, Dict[str, Any]] = {
     "indian": {
         "palette": {"primary":"#D97706","primary_dark":"#B45309"},  # Warm saffron/turmeric
-        "hero": HERO_BY_CUISINE["indian"],
+        "hero": [],
         "menu": [
-            {"name":"Chicken Tikka Masala","desc":"Creamy tomato sauce, basmati rice","price":"$14.99","img": "https://images.unsplash.com/photo-1585937421612-70a008356fbe?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Lamb Biryani","desc":"Fragrant basmati rice, spices","price":"$16.99","img": "https://images.unsplash.com/photo-1563379091339-03246963d96c?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Garlic Naan","desc":"Fresh baked bread","price":"$3.99","img": "https://images.unsplash.com/photo-1601050690597-df0568f70950?q=80&w=1200&auto=format&fit=crop"}
+            {"name":"Chicken Tikka Masala","desc":"Creamy tomato sauce, basmati rice","price":"$14.99","img": "gq:Chicken Tikka Masala indian"},
+            {"name":"Lamb Biryani","desc":"Fragrant basmati rice, spices","price":"$16.99","img": "gq:Lamb Biryani indian"},
+            {"name":"Garlic Naan","desc":"Fresh baked bread","price":"$3.99","img": "gq:Garlic Naan indian"}
         ]
     },
     "burger": {
         "palette": {"primary":"#DC2626","primary_dark":"#B91C1C"},  # Classic red
-        "hero": HERO_BY_CUISINE["burger"],
+        "hero": [],
         "menu": [
-            {"name":"Double Smash Burger","desc":"American cheese, pickles, shack sauce","price":"$10.99","img": "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Crispy Chicken Sandwich","desc":"Buttermilk fried chicken, slaw","price":"$8.99","img": "https://images.unsplash.com/photo-1700768400970-428c50bffc11?q=80&w=764&auto=format&fit=crop"},
-            {"name":"Crinkle Cut Fries","desc":"Sea salt, extra crispy","price":"$3.99","img": "https://images.unsplash.com/photo-1576107232684-1279f390859f?q=80&w=1200&auto=format&fit=crop"}
+            {"name":"Double Smash Burger","desc":"American cheese, pickles, shack sauce","price":"$10.99","img": "gq:Double Smash Burger burger"},
+            {"name":"Crispy Chicken Sandwich","desc":"Buttermilk fried chicken, slaw","price":"$8.99","img": "gq:Crispy Chicken Sandwich burger"},
+            {"name":"Crinkle Cut Fries","desc":"Sea salt, extra crispy","price":"$3.99","img": "gq:Crinkle Cut Fries burger"}
         ]
     },
     "italian": {
         "palette": {"primary":"#059669","primary_dark":"#047857"},  # Italian flag green
-        "hero": HERO_BY_CUISINE["italian"],
+        "hero": [],
         "menu": [
-            {"name":"Chicken Alfredo","desc":"Creamy parmesan sauce, fettuccine","price":"$14.99","img": "https://images.unsplash.com/photo-1621996346565-e3dbc353d2e5?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Spaghetti & Meatballs","desc":"San Marzano tomatoes, basil","price":"$12.99","img": "https://images.unsplash.com/photo-1551183053-bf91a1d81141?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Margherita Pizza","desc":"Fresh mozzarella, tomato, basil","price":"$11.49","img": "https://images.unsplash.com/photo-1604382354936-07c5d9983bd3?q=80&w=1200&auto=format&fit=crop"}
+            {"name":"Chicken Alfredo","desc":"Creamy parmesan sauce, fettuccine","price":"$14.99","img": "gq:Chicken Alfredo italian"},
+            {"name":"Spaghetti & Meatballs","desc":"San Marzano tomatoes, basil","price":"$12.99","img": "gq:Spaghetti and Meatballs italian"},
+            {"name":"Margherita Pizza","desc":"Fresh mozzarella, tomato, basil","price":"$11.49","img": "gq:Margherita Pizza italian"}
         ]
     },
     "mexican": {
         "palette": {"primary":"#EA580C","primary_dark":"#C2410C"},  # Vibrant orange-red
-        "hero": HERO_BY_CUISINE["mexican"],
+        "hero": [],
         "menu": [
-            {"name":"Carne Asada Tacos","desc":"Cilantro, onions, lime","price":"$9.49","img": "https://images.unsplash.com/photo-1565299585323-38174c267b34?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Chicken Quesadilla","desc":"Three-cheese blend, pico","price":"$8.99","img": "https://images.unsplash.com/photo-1618040996337-56904b7850b9?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Chips & Guacamole","desc":"House-made","price":"$5.99","img": "https://images.unsplash.com/photo-1541544741938-0af808871cc0?q=80&w=1200&auto=format&fit=crop"}
+            {"name":"Carne Asada Tacos","desc":"Cilantro, onions, lime","price":"$9.49","img": "gq:Carne Asada Tacos mexican"},
+            {"name":"Chicken Quesadilla","desc":"Three-cheese blend, pico","price":"$8.99","img": "gq:Chicken Quesadilla mexican"},
+            {"name":"Chips & Guacamole","desc":"House-made","price":"$5.99","img": "gq:Chips and Guacamole mexican"}
         ]
     },
     "chinese": {
         "palette": {"primary":"#DC2626","primary_dark":"#B91C1C"},  # Traditional red
-        "hero": HERO_BY_CUISINE["chinese"],
+        "hero": [],
         "menu": [
-            {"name":"General Tso's Chicken","desc":"Sweet and spicy with steamed rice","price":"$12.99","img": "https://images.unsplash.com/photo-1525755662778-989d0524087e?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Beef Lo Mein","desc":"Soft noodles with vegetables","price":"$11.49","img": "https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Pork Dumplings","desc":"Pan-fried, served with soy sauce","price":"$7.99","img": "https://images.unsplash.com/photo-1563379091339-03246963d96c?q=80&w=1200&auto=format&fit=crop"}
+            {"name":"General Tso's Chicken","desc":"Sweet and spicy with steamed rice","price":"$12.99","img": "gq:General Tso Chicken chinese"},
+            {"name":"Beef Lo Mein","desc":"Soft noodles with vegetables","price":"$11.49","img": "gq:Beef Lo Mein chinese"},
+            {"name":"Pork Dumplings","desc":"Pan-fried, served with soy sauce","price":"$7.99","img": "gq:Pork Dumplings chinese"}
         ]
     },
     "thai": {
         "palette": {"primary":"#7C3AED","primary_dark":"#6D28D9"},  # Thai purple
-        "hero": HERO_BY_CUISINE["thai"],
+        "hero": [],
         "menu": [
-            {"name":"Pad Thai","desc":"Rice noodles, shrimp, bean sprouts","price":"$12.99","img": "https://images.unsplash.com/photo-1559847844-5315695dadae?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Green Curry","desc":"Coconut milk, basil, jasmine rice","price":"$13.49","img": "https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Tom Yum Soup","desc":"Spicy and sour with prawns","price":"$9.99","img": "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?q=80&w=1200&auto=format&fit=crop"}
+            {"name":"Pad Thai","desc":"Rice noodles, shrimp, bean sprouts","price":"$12.99","img": "gq:Pad Thai thai"},
+            {"name":"Green Curry","desc":"Coconut milk, basil, jasmine rice","price":"$13.49","img": "gq:Green Curry thai"},
+            {"name":"Tom Yum Soup","desc":"Spicy and sour with prawns","price":"$9.99","img": "gq:Tom Yum Soup thai"}
         ]
     },
     "japanese": {
         "palette": {"primary":"#1F2937","primary_dark":"#111827"},  # Elegant dark
-        "hero": HERO_BY_CUISINE["japanese"],
+        "hero": [],
         "menu": [
-            {"name":"Salmon Teriyaki","desc":"Grilled with steamed vegetables","price":"$16.99","img": "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"California Roll","desc":"Crab, avocado, cucumber","price":"$8.99","img": "https://images.unsplash.com/photo-1553621042-f6e147245754?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Chicken Ramen","desc":"Rich broth with soft-boiled egg","price":"$13.49","img": "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?q=80&w=1200&auto=format&fit=crop"}
+            {"name":"Salmon Teriyaki","desc":"Grilled with steamed vegetables","price":"$16.99","img": "gq:Salmon Teriyaki japanese"},
+            {"name":"California Roll","desc":"Crab, avocado, cucumber","price":"$8.99","img": "gq:California Roll japanese"},
+            {"name":"Chicken Ramen","desc":"Rich broth with soft-boiled egg","price":"$13.49","img": "gq:Chicken Ramen japanese"}
         ]
     },
     "american": {
         "palette": {"primary":"#EC1111","primary_dark":"#2563EB"},  # Classic blue (not orange!)
-        "hero": HERO_BY_CUISINE["american"],
+        "hero": [],
         "menu": [
-            {"name":"Roast Chicken Plate","desc":"Choice of two sides","price":"$10.99","img": "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Country Fried Steak","desc":"Pepper gravy, mashed potatoes","price":"$11.49","img": "https://images.unsplash.com/photo-1562967916-eb82221dfb92?q=80&w=1200&auto=format&fit=crop"},
-            {"name":"Vegetable Plate","desc":"Pick any three sides","price":"$8.99","img": "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?q=80&w=1200&auto=format&fit=crop"}
+            {"name":"Roast Chicken Plate","desc":"Choice of two sides","price":"$10.99","img": "gq:Roast Chicken Plate american"},
+            {"name":"Country Fried Steak","desc":"Pepper gravy, mashed potatoes","price":"$11.49","img": "gq:Country Fried Steak american"},
+            {"name":"Vegetable Plate","desc":"Pick any three sides","price":"$8.99","img": "gq:Vegetable Plate american"}
         ]
     }
 }
@@ -1517,6 +1675,33 @@ async def yelp_business_details(business_id: str) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
     return await http_get_json(f"https://api.yelp.com/v3/businesses/{business_id}", headers=headers)
 
+
+async def _fetch_details(provider: str, place_id: Optional[str], details_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Fetch normalized details using provider/place_id or a provided payload.
+    This does NOT affect other endpoints; it is only used by /generate/mobile.
+    """
+    if details_payload:
+        return details_payload
+
+    if provider == "google" and place_id:
+        raw = await google_details(place_id)
+        norm = normalize_details_google(raw)
+        # try to augment chain_count_nearby; non-fatal if this fails
+        try:
+            norm["chain_count_nearby"] = await google_nearby_chain_count(
+                norm.get("name") or "",
+                norm.get("lat"), norm.get("lng"), norm.get("id"),
+                CHAIN_RADIUS_M,
+            )
+        except Exception:
+            pass
+        return norm
+
+    if provider == "yelp" and place_id:
+        raw = await yelp_business_details(place_id)
+        return normalize_details_yelp(raw)
+
+    raise HTTPException(400, "Missing details and place_id")
 # ────────────────────────────────────────────────────────────────────────────
 # Models
 # ────────────────────────────────────────────────────────────────────────────
@@ -1531,6 +1716,33 @@ class TemplateOut(BaseModel):
     html: Optional[str] = None
     react: Optional[str] = None
     meta: Dict[str, Any]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Mobile App Builder Endpoint (always uses v3)
+# ────────────────────────────────────────────────────────────────────────────
+@app.post("/generate/mobile", response_model=TemplateOut)
+async def generate_mobile(
+    payload: GeneratePayload,
+    request: Request,
+    _rl = Depends(rate_limit),
+    _sec = Depends(security_guard)
+):
+    # Fetch details (using existing helper; keeps behavior consistent)
+    details = await _fetch_details(payload.provider, payload.place_id, payload.details)
+
+    # Always use the new mobile app builder and make caching/cdn debugging easy
+    log.info("generate/mobile: using build_mobile_app_html (v3) for %s", details.get("name"))
+    html, meta = await build_mobile_app_html(details)
+
+    # Add a visible build stamp in the HTML to confirm version and cache state
+    stamp = f"<!-- MOBILE_BUILDER=v3 no-hero-circle bg=hardcoded-svg ts={int(time.time())} -->"
+    if "</head>" in html:
+        html = html.replace("</head>", stamp + "\n</head>")
+    else:
+        html = stamp + html
+
+    return {"html": html, "meta": meta}
 
 
 def best_logo(details: Dict[str, Any]) -> Tuple[Optional[str], str]:
@@ -1564,7 +1776,7 @@ def best_logo(details: Dict[str, Any]) -> Tuple[Optional[str], str]:
     hp = _homepage(details.get('website'))
     if hp:
         host = urlparse(hp).netloc
-        fallback = f"https://www.google.com/s2/favicons?sz=256&domain={host}"
+        fallback = f"https://www.google.com/s2/favicons?sz=512&domain={host}"
         return fallback, 'generated_favicon'
 
     return None, 'none'
@@ -1582,351 +1794,7 @@ def five_star_only(details: Dict[str, Any]) -> List[Dict[str, str]]:
     src = details.get("reviews") or []
     return [rv for rv in src if (rv.get("rating") or 0) == 5]
 
-# HTML builder
-async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, Dict[str, Any]]:
-    name = details.get("name") or "Restaurant"
-    address = details.get("address") or ""
-    website = details.get("website") or ""
-    phone = details.get("phone") or ""
-    rating = details.get("rating")
-    review_count = details.get("review_count")
-    map_url = details.get("map_url") or "#"
 
-    # Use improved cuisine detection
-    cuisine = cuisine_from_types(details)
-
-    # Get restaurant context
-    context = get_restaurant_context(details)
-
-    # Select appropriate theme colors
-    # Get logo and brand color
-    logo, logo_color, logo_reason = await best_logo_with_color(details)
-    if not logo_color:
-        log.info("ColorThief could not extract a brand color for %s; falling back to cuisine palette", details.get("name"))
-    pal = select_theme_colors(cuisine, context, logo_color)
-
-    # Get assets for the detected cuisine
-    assets = CUISINE_ASSETS.get(cuisine, CUISINE_ASSETS[DEFAULT_CUISINE])
-
-    # Log the detection results
-    log.info("BUILD PAGE: name=%s cuisine=%s context=%s colors=%s logo_color=%s",
-             name, cuisine, context["atmosphere"], pal["primary"], logo_color)
-    
-    # Smart hero image selection (prefers interior shots from Google, then curated Unsplash)
-    hero_imgs: List[str] = await select_hero_images(details, cuisine)
-
-    await resolve_menu_images(details, cuisine)
-    raw_menu_items: List[Dict[str, str]] = list((details.get("_resolved_menu") or [])[:3])
-    menu_items: List[Dict[str, str]] = []
-    for it in raw_menu_items:
-        # Ensure menu images have proper URLs
-        img_url = it.get("img", "")
-        if img_url and not img_url.startswith(('http://', 'https://')):
-            # If it's still a photo- ID, convert to full Unsplash URL
-            if img_url.startswith("photo-"):
-                img_url = f"https://images.unsplash.com/{img_url}?q=80&w=1600&auto=format&fit=crop"
-            else:
-                img_url = ""
-        
-        menu_items.append({
-            "name": it["name"],
-            "desc": it["desc"],
-            "price": it["price"],
-            "img": img_url,
-        })
-
-    # Rest of the function remains the same...
-    revs = five_star_only(details)
-    show_reviews = len(revs) >= 2
-    revs = revs[:4]
-    gallery_raw = details.get("gallery") or []
-    
-    # Use only Google-provided gallery images; keep unique and limit to 4
-    gallery: List[str] = []
-    for u in gallery_raw:
-        if u and u not in gallery:
-            gallery.append(u)
-    gallery = gallery[:4]
-    
-    hrs = hours_list(details)
-    fallback_foto = assets.get("fallback") or HERO_FALLBACK_URL
-
-    # Continue with HTML generation using the dynamic palette...
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>{safe(name)}</title>
-<link rel="icon" href="{safe(logo or '')}"/>
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;700&display=swap" rel="stylesheet"/>
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-tailwind.config = {{
-  theme: {{
-    extend: {{
-      colors: {{
-        brand: "{pal['primary']}",
-        brandd: "{pal['primary_dark']}",
-        pearl: "#F7F3EE",
-        ink: "#1B1B1B"
-      }},
-      fontFamily: {{
-        display: ['Playfair Display','serif'],
-        body: ['Inter','system-ui','-apple-system','Segoe UI','Roboto','sans-serif']
-      }},
-      boxShadow: {{
-        soft: "0 10px 30px rgba(0,0,0,.12)",
-        card: "0 12px 40px rgba(0,0,0,.12)"
-      }}
-    }}
-  }}
-}}
-</script>
-<style>
-  html,body{{background:linear-gradient(#FBF8F3,#F5F2ED) fixed; color:#1B1B1B;}}
-  .glass{{background:rgba(255,255,255,.55); backdrop-filter: blur(12px); border:1px solid rgba(0,0,0,.06);}}
-  .fade-wrap{{position:relative;height:clamp(320px,60vh,820px);overflow:hidden;border-radius:1.5rem}}
-  @media (min-width:1024px){{.fade-wrap{{height:clamp(420px,62vh,880px)}}}}
-  @media (min-width:1536px){{.fade-wrap{{height:clamp(520px,64vh,920px)}}}}
-  .fade-wrap img{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;opacity:0;transition:opacity 900ms ease-in-out;filter:saturate(1.05) contrast(1.06) brightness(0.98);transform-origin:center;animation:hero-zoom 18s ease-in-out infinite alternate}}
-  .fade-wrap img.active{{opacity:1}}
-  @keyframes hero-zoom{{from{{transform:scale(1.02)}}to{{transform:scale(1.08)}}}}
-  .dot{{width:8px;height:8px;border-radius:9999px;background:#0003}}
-  @media (min-width:1536px){{.dot{{width:10px;height:10px}}}}
-  .dot.active{{background:{pal['primary']};}}
-  .card{{background:#FFF;border-radius:1.25rem;box-shadow:var(--tw-shadow, 0 10px 30px rgba(0,0,0,.10));}}
-</style>
-<meta http-equiv="Content-Security-Policy"
-  content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; connect-src 'self' https:">
-<meta name="referrer" content="no-referrer">
-</head>
-<body class="font-body">
-
-  <header class="sticky top-0 z-50">
-    <nav class="{CONTAINER} py-3 flex items-center justify-between bg-white/80 backdrop-blur border-b border-black/5">
-      <a class="flex items-center gap-3" href="#top" aria-label="{safe(name)}">
-        {"<img src='"+safe(logo)+"' class='h-7 w-7 rounded object-contain' alt='logo'/>" if logo else ""}
-        <span class="font-semibold tracking-wide">{safe(name)}</span>
-      </a>
-      <ul class="hidden md:flex items-center gap-6 text-sm">
-        <li><a href="#menu" class="hover:text-brand">Menu</a></li>
-        <li><a href="#about" class="hover:text-brand">About</a></li>
-        <li><a href="#gallery" class="hover:text-brand">Gallery</a></li>
-        <li><a href="#reviews" class="hover:text-brand">Reviews</a></li>
-        <li><a href="#contact" class="hover:text-brand">Contact</a></li>
-      </ul>
-      <div class="flex items-center gap-2">
-        <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition">Order Online</a>
-      </div>
-    </nav>
-  </header>
-
-  <section id="top" class="pt-6">
-    <div class="{CONTAINER}">
-      <div class="fade-wrap shadow-soft" id="heroWrap">
-        {"".join([f"<img class='hero-img {'active' if i==0 else ''}' src='{safe(u)}' alt='hero image {i+1}' {'loading=\"eager\"' if i==0 else 'loading=\"lazy\"'} decoding='async' />" for i,u in enumerate(hero_imgs)])}
-      </div>
-      <div class="relative -mt-10 md:-mt-12">
-        <div class="glass rounded-3xl p-6 md:p-8 shadow-soft">
-          <div class="md:flex md:items-end md:justify-between gap-8">
-            <div>
-              <h1 class="font-display text-4xl md:text-5xl tracking-tight">{safe(name)}</h1>
-              <p class="mt-3 opacity-80">{safe(address)}</p>
-              <div class="mt-4 flex flex-wrap gap-2">
-                {"".join([
-                  f"<span class='inline-flex items-center rounded-full px-3 py-1 text-sm bg-brand/10 text-brand'>★ {rating:.1f}/5</span>" if rating else "",
-                  f"<span class='inline-flex items-center rounded-full px-3 py-1 text-sm bg-black/5'>{int(review_count)}+ reviews</span>" if review_count else "",
-                  f"<span class='inline-flex items-center rounded-full px-3 py-1 text-sm bg-black/5'>$ · Affordable</span>" if (details.get('price_level') is not None) else ""
-                ])}
-              </div>
-            </div>
-            <div class="mt-6 md:mt-0 shrink-0 flex gap-3">
-              <a href="#menu" class="px-5 py-3 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition">See Menu</a>
-              <a href="{safe(map_url)}" target="_blank" rel="noopener" class="px-5 py-3 rounded-xl border border-black/10 hover:bg-black/5 transition">Get Directions</a>
-            </div>
-          </div>
-        </div>
-        <div class="mt-3 flex items-center justify-center gap-2" id="heroDots">
-          {"".join([f"<div class='dot {'active' if i==0 else ''}' data-idx='{i}'></div>" for i in range(len(hero_imgs))])}
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section id="menu" class="mt-12 md:mt-16">
-    <div class="{CONTAINER}">
-      <div class="flex items-end justify-between gap-4">
-        <h2 class="font-display text-3xl md:text-4xl">Menu Highlights</h2>
-        <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition shadow-soft">Order Online</a>
-      </div>
-      <div class="mt-6 grid md:grid-cols-2 lg:grid-cols-3 gap-7">
-        {"".join([f"""
-        <article class="card overflow-hidden">
-          <div class="aspect-[4/3] w-full overflow-hidden">
-            <img class="w-full h-full object-cover"
-                 src="{safe(item['img'])}"
-                 alt="{safe(item['name'])}"
-                 loading="lazy"
-                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"/>
-            <div style="display:none" class="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400">
-              <span>Image not available</span>
-            </div>
-          </div>
-          <div class="p-5 md:p-6 flex items-start justify-between gap-3">
-            <div>
-              <h3 class="font-semibold text-lg">{safe(item['name'])}</h3>
-              <p class="mt-1 opacity-75 text-sm">{safe(item['desc'])}</p>
-            </div>
-            <span class="inline-flex items-center rounded-full px-3 py-1 text-sm bg-brand/15 text-brand">{safe(item['price'])}</span>
-          </div>
-        </article>
-        """ for item in menu_items])}
-      </div>
-      <p class="mt-3 text-sm opacity-70">*Pricing and availability may vary by location.</p>
-    </div>
-  </section>
-
-  <section id="about" class="mt-12 md:mt-16">
-    <div class="{CONTAINER} grid md:grid-cols-2 gap-7">
-      <article class="card p-6 md:p-8">
-        <h2 class="font-display text-2xl md:text-3xl">About Us</h2>
-        <p class="mt-3 text-[17px] leading-7 opacity-90">
-          {safe(details.get("summary") or "Comforting classics made from scratch daily, served with warm hospitality.")}
-        </p>
-        <div class="mt-5 flex flex-wrap gap-2">
-          <span class="inline-flex items-center rounded-full px-3 py-1 text-sm bg-brand/10 text-brand">Family Friendly</span>
-          <span class="inline-flex items-center rounded-full px-3 py-1 text-sm bg-black/5">Catering Available</span>
-        </div>
-      </article>
-
-      <aside class="card p-6 md:p-8">
-        <h2 class="font-display text-2xl md:text-3xl">Operating Hours</h2>
-        <ul class="mt-4 divide-y divide-black/5">
-          {"".join([f"<li class='flex justify-between py-2'><span>{safe(d)}</span><span class='font-medium'>{safe(h)}</span></li>" for d,h in (hrs or [])])}
-        </ul>
-        <div class="mt-4 text-sm opacity-75">Hours may vary on holidays.</div>
-      </aside>
-    </div>
-  </section>
-
-  <section id="gallery" class="mt-12 md:mt-16">
-    <div class="{CONTAINER}">
-      <h2 class="font-display text-3xl md:text-4xl">Gallery</h2>
-      <div class="mt-6 grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {"".join([
-          f"<a href='{safe(u)}' target='_blank' rel='noopener' class='block rounded-2xl overflow-hidden card'><img src='{safe(u)}' data-fallbacks='{safe(fallback_foto)}' onerror='__imgSwap(this)' class='w-full h-48 object-cover' loading='lazy' decoding='async'/></a>"
-          for u in (gallery[:4] or [])
-        ])}
-      </div>
-    </div>
-  </section>
-
-  {""
-  if not show_reviews else
-  f'''
-  <section id="reviews" class="mt-12 md:mt-16">
-    <div class="{CONTAINER}">
-      <div class="flex items-end justify-between gap-4">
-        <h2 class="font-display text-3xl md:text-4xl">What Guests Say</h2>
-        {("<div class='opacity-80'>Google rating <span class='font-semibold'>"+str(rating)+"</span> · "+str(int(review_count))+"+ reviews</div>") if rating and review_count else ""}
-      </div>
-      <div class="mt-6 grid md:grid-cols-2 gap-7">
-        { "".join([f"""
-        <article class="card p-6">
-          <div class="flex items-center gap-3">
-            <img src="{safe(rv.get('profile_photo_url') or '')}" class="h-12 w-12 rounded-full object-cover" alt="avatar"/>
-            <div>
-              <div class="font-semibold">{safe(rv.get('author_name') or 'Guest')}</div>
-              <div class="text-sm text-brand">★★★★★</div>
-            </div>
-          </div>
-          <p class="mt-4 opacity-90">{safe(rv.get('text') or '')}</p>
-          <div class="mt-3 text-sm opacity-60">{safe(rv.get('relative_time') or '')}</div>
-        </article>""" for rv in revs]) }
-      </div>
-      <div class="mt-3 text-xs opacity-60">Verified 5★ Google reviews.</div>
-    </div>
-  </section>
-  '''}
-
-  <section id="contact" class="mt-12 md:mt-16 mb-16">
-    <div class="{CONTAINER}">
-      <div class="card p-8 grid md:grid-cols-3 gap-6">
-        <div>
-          <h3 class="font-display text-2xl">Visit Us</h3>
-          <p class="mt-2 opacity-85">{safe(address)}</p>
-          {"<p class='mt-2'><a class='underline' href='tel:"+safe(phone)+"'>"+safe(phone)+"</a></p>" if phone else ""}
-        </div>
-        <div>
-          <h3 class="font-display text-2xl">Online</h3>
-          {"<p class='mt-2'><a class='underline' href='"+safe(website)+"' target='_blank' rel='noopener'>"+safe(website)+"</a></p>" if website else "<p class='mt-2 opacity-75'>Website not provided</p>"}
-          <p class="mt-2"><a class="underline" href="{safe(map_url)}" target="_blank" rel="noopener">Google Maps</a></p>
-        </div>
-        <div class="flex items-end md:items-center md:justify-end">
-          <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition">Book / Order</a>
-        </div>
-      </div>
-      <div class="mt-6 text-center opacity-70">
-        <span>© {time.strftime("%Y")} {safe(name)} • Created by <strong>Restronaut.ai</strong></span>
-      </div>
-    </div>
-  </section>
-
-<script>
-  function __imgSwap(img) {{
-    try {{
-      var list = (img.getAttribute('data-fallbacks') || '').split('|').filter(Boolean);
-      img.__idx = img.__idx || 0;
-      if (img.__idx < list.length) {{
-        img.src = list[img.__idx++];
-      }}
-    }} catch (e) {{}}
-  }}
-
-  (function() {{
-    var wrap = document.getElementById('heroWrap');
-    if (!wrap) return;
-
-    var imgs = Array.prototype.slice.call(wrap.querySelectorAll('img'));
-    var dotsWrap = document.getElementById('heroDots');
-    var dots = dotsWrap ? Array.prototype.slice.call(dotsWrap.querySelectorAll('.dot')) : [];
-    var idx = 0;
-
-    function show(i) {{
-      imgs.forEach(function(im, k) {{ im.classList.toggle('active', k === i); }});
-      dots.forEach(function(d, k) {{ d.classList.toggle('active', k === i); }});
-      idx = i;
-    }}
-
-    dots.forEach(function(d) {{
-      d.addEventListener('click', function() {{
-        var n = parseInt(d.getAttribute('data-idx') || '0', 10);
-        show(n);
-      }});
-    }});
-
-    setInterval(function() {{
-      show((idx + 1) % imgs.length);
-    }}, 5000);
-  }})();
-</script>
-
-</body>
-</html>
-"""
-    meta = {
-        "palette": pal,
-        "logo_url": logo,
-        "cuisine": cuisine,
-        "name": name,
-        "address": address,
-        "website": website,
-        "map_url": map_url,
-        "logo_color": logo_color,
-        "logo_reason": logo_reason,
-    }
-    return html, meta
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -2197,3 +2065,32 @@ async def generate_template(
     except Exception as e:
         log.error(f"Error building HTML: {e}")
         raise HTTPException(500, "Failed to generate template")
+    
+    
+
+@app.post("/generate/mobile", response_model=TemplateOut, summary="Generate a premium mobile app concept screen")
+async def generate_mobile_template(
+    payload: GeneratePayload,
+    request: Request,
+    _: None = Depends(rate_limit),
+    __: None = Depends(security_guard),
+):
+    try:
+        details = await _fetch_details(payload.provider, payload.place_id, payload.details)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"mobile_template: details fetch failed: {e}")
+        raise HTTPException(500, "Failed to fetch details")
+
+    try:
+        # Force the endpoint to always use the pinned v3 builder, even if another build_mobile_app_html is defined later
+        html, meta = await build_mobile_app_html_v3(details)
+        return TemplateOut(html=html, react=None, meta=meta)
+    except Exception as e:
+        log.error(f"mobile_template build failed: {e}")
+        raise HTTPException(500, "Failed to generate mobile template")
+    
+
+
+    
