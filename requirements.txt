@@ -33,8 +33,9 @@ Pillow
 colorthief
 cairocffi
 CairoSVG
-
-# Caching
+json
+json5
+logging
 redis
 
 # OpenAI
