@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-load_dotenv()  # Load .env early so OPENAI_API_KEY and others are available
+load_dotenv()  
 import httpx
 from httpx import AsyncClient, Limits, Timeout
 from contextlib import asynccontextmanager
@@ -912,7 +912,7 @@ def cuisine_from_types(details: Dict[str, Any]) -> str:
         "indian": {
             "types": ["indian_restaurant", "restaurant", "meal_takeaway", "food", "establishment"],
             "name_keywords": ["indian", "india", "desi", "curry", "tandoor", "masala", "biryani", 
-                            "punjabi", "bengali", "south indian", "north indian", "spice", "aroma"],
+                            "punjabi", "bengali", "south indian", "north indian", "aroma", "pakistani", "hyderabadi"],
             "priority": 1  # Higher priority for specific cuisines
         },
         "chinese": {
@@ -922,12 +922,12 @@ def cuisine_from_types(details: Dict[str, Any]) -> str:
         },
         "italian": {
             "types": ["italian_restaurant", "restaurant", "meal_takeaway"],
-            "name_keywords": ["pizza", "pizzeria", "italian", "pasta", "trattoria", "ristorante", "mario", "luigi"],
+            "name_keywords": ["pizza", "pizzeria", "italian", "pasta", "trattoria", "ristorante", "mario", "luigi", "Caffe", "vino", "tuscan"],
             "priority": 1
         },
         "mexican": {
             "types": ["mexican_restaurant", "restaurant", "meal_takeaway"],
-            "name_keywords": ["taco", "tacos", "mexican", "cantina", "casa", "el ", "la ", "burrito", "quesadilla"],
+            "name_keywords": ["taco", "tacos", "mexican", "cantina", "casa", "el ", "la ", "burrito", "quesadilla", "sombrero", "agageve", "spanish"],
             "priority": 1
         },
         "thai": {
@@ -947,7 +947,7 @@ def cuisine_from_types(details: Dict[str, Any]) -> str:
         },
         "american": {
             "types": ["restaurant", "american_restaurant", "meal_takeaway"],
-            "name_keywords": ["american", "diner", "cafe", "grill", "bar", "steakhouse"],
+            "name_keywords": ["american", "diner", "cafe", "american grill", "bar", "steakhouse", "bbq", "barbecue", "roadhouse", "wings"],
             "priority": 0
         }
     }
@@ -1872,6 +1872,123 @@ async def google_nearby_restaurants(lat: Optional[float], lng: Optional[float], 
         # Google requires a short delay before using next_page_token
         await asyncio.sleep(2.1)
     return out
+
+async def google_textsearch_cuisine(
+    *, lat: float, lng: float, cuisine: str, radius_m: int = 16093, limit: int = 50
+) -> List[Dict[str, Any]]:
+    """Use Google Places Text Search to find restaurants matching a cuisine query.
+
+    This is more reliable than inferring cuisine from generic `types` on Nearby results.
+    """
+    if not GOOGLE_API_KEY or lat is None or lng is None or not cuisine:
+        return []
+
+    def cuisine_query(c: str) -> str:
+        mapping = {
+            "indian": "indian restaurant",
+            "burger": "burger restaurant",
+            "italian": "italian restaurant",
+            "mexican": "mexican restaurant",
+            "chinese": "chinese restaurant",
+            "thai": "thai restaurant",
+            "japanese": "japanese restaurant",
+            "american": "american restaurant",
+        }
+        return mapping.get(c.lower(), f"{c} restaurant")
+
+    query = cuisine_query(cuisine)
+    out: List[Dict[str, Any]] = []
+    page_token: Optional[str] = None
+    while True:
+        params = {
+            "query": query,
+            "location": f"{lat},{lng}",
+            "radius": str(max(500, min(radius_m, 50000))),
+            "key": GOOGLE_API_KEY,
+        }
+        if page_token:
+            params["pagetoken"] = page_token
+        data = await http_get_json("https://maps.googleapis.com/maps/api/place/textsearch/json", params=params)
+        results = data.get("results") or []
+        for r in results:
+            pid = r.get("place_id")
+            name = r.get("name")
+            rating = r.get("rating")
+            map_url = f"https://www.google.com/maps/place/?q=place_id:{pid}" if pid else None
+            out.append({"id": pid, "name": name, "rating": rating, "map_url": map_url})
+            if len(out) >= limit:
+                return out
+        page_token = data.get("next_page_token")
+        if not page_token:
+            break
+        await asyncio.sleep(2.1)
+    return out
+
+async def nearby_same_cuisine(
+    details: Dict[str, Any], *, radius_m: int = 16093, min_results: int = 7, scan_limit: int = 50, concurrency: int = 6
+) -> List[Dict[str, Any]]:
+    """Return at least `min_results` nearby competitors with the same cuisine.
+
+    First uses Places Text Search with a cuisine-specific query to find candidates,
+    then filters/excludes the original business and de-duplicates. Falls back to a
+    light details-check only if necessary.
+    """
+    lat, lng = details.get("lat"), details.get("lng")
+    base_cuisine = cuisine_from_types(details)
+    self_id = details.get("id")
+    if lat is None or lng is None:
+        return []
+
+    # Prefer text search for cuisine-specific results
+    text_hits = await google_textsearch_cuisine(lat=lat, lng=lng, cuisine=base_cuisine, radius_m=radius_m, limit=scan_limit)
+    # Exclude self + dedupe by place_id
+    dedup: Dict[str, Dict[str, Any]] = {}
+    for it in text_hits:
+        pid = it.get("id")
+        if not pid or pid == self_id:
+            continue
+        dedup[pid] = {**it, "cuisine": base_cuisine}
+
+    out = list(dedup.values())
+
+    if len(out) >= min_results:
+        return out[:min_results]
+
+    # Fallback: widen radius slightly, or inspect nearby and verify via details
+    if len(out) < min_results:
+        more = await google_nearby_restaurants(lat, lng, radius_m=min(25000, radius_m + 5000), limit=scan_limit)
+
+        sem = asyncio.Semaphore(concurrency)
+
+        async def fetch_and_match(item: Dict[str, Any]):
+            pid = item.get("id")
+            if not pid or pid == self_id or pid in dedup:
+                return None
+            async with sem:
+                try:
+                    raw = await google_details(pid)
+                    norm = normalize_details_google(raw)
+                    if cuisine_from_types(norm) != base_cuisine:
+                        return None
+                    return {
+                        "id": norm.get("id"),
+                        "name": norm.get("name"),
+                        "rating": norm.get("rating"),
+                        "map_url": f"https://www.google.com/maps/place/?q=place_id:{norm.get('id')}" if norm.get("id") else None,
+                        "cuisine": base_cuisine,
+                    }
+                except Exception:
+                    return None
+
+        tasks: List[asyncio.Task] = [asyncio.create_task(fetch_and_match(i)) for i in more]
+        for t in asyncio.as_completed(tasks):
+            res = await t
+            if res:
+                out.append(res)
+                if len(out) >= min_results:
+                    break
+
+    return out[:min_results]
   
 
 # Yelp fallback
@@ -2241,10 +2358,18 @@ async def insights_presence(
     if ai_multi is None:
         ai_multi = _local_insights_fallback(details, prescore, nearby, complaints)
 
+    # Nearby competitors with the same cuisine (ensure >=7 when possible)
+    try:
+        same_cuisine = await nearby_same_cuisine(details, radius_m=16093, min_results=7, scan_limit=50, concurrency=6)
+    except Exception as e:
+        log.warning("presence: same-cuisine nearby failed: %s", e)
+        same_cuisine = []
+
     return {
         "id": details.get("id"),
         "name": details.get("name"),
         "nearby": nearby,
+        "nearby_same_cuisine": same_cuisine,
         "presence": prescore,
         "reviews": complaints,     # exactly 3
         "ai_oneline": ai_line,     # persuasive one-liner
