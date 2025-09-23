@@ -1,7 +1,8 @@
 # app.py
-import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging, json
+import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging, json, mimetypes
 from urllib.parse import urlparse, quote
-from typing import Optional, Literal, Dict, Any, List, Tuple
+from typing import Optional, Literal, Dict, Any, List, Tuple, FrozenSet
+from pathlib import Path
 from mobile import build_mobile_app_html
 from website import build_html
 from fastapi import FastAPI, HTTPException, Query, Request, Depends
@@ -91,6 +92,99 @@ MOBILE_BG_PATH = os.getenv(
     "MOBILE_BG_PATH",
     os.path.join(BASE_DIR, "assets", "mobile_bg.svg")
 )
+
+TEMPLATE_ASSETS_ROOT = Path(BASE_DIR) / "assets" / "Template_Assets"
+
+
+def _file_to_data_uri(path: Path) -> Optional[str]:
+    try:
+        mime, _ = mimetypes.guess_type(str(path))
+        if not mime or not mime.startswith("image/"):
+            return None
+        data = path.read_bytes()
+        return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+    except Exception:
+        return None
+
+
+def _slugify_menu_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
+def _tokenize_menu_name(name: str) -> FrozenSet[str]:
+    tokens = [tok for tok in re.split(r"[^a-z0-9]+", name.lower()) if tok]
+    return frozenset(tokens)
+
+
+def _load_template_assets() -> Dict[str, Dict[str, Any]]:
+    assets: Dict[str, Dict[str, Any]] = {}
+    if not TEMPLATE_ASSETS_ROOT.exists():
+        return assets
+
+    for cuisine_dir in TEMPLATE_ASSETS_ROOT.iterdir():
+        if not cuisine_dir.is_dir():
+            continue
+        cuisine_key = cuisine_dir.name.lower()
+        hero_images: List[str] = []
+        menu_by_slug: Dict[str, str] = {}
+        menu_by_tokens: Dict[FrozenSet[str], str] = {}
+
+        for file_path in sorted(cuisine_dir.iterdir(), key=lambda p: p.name.lower()):
+            if not file_path.is_file():
+                continue
+            uri = _file_to_data_uri(file_path)
+            if not uri:
+                continue
+            stem = file_path.stem.lower()
+            if stem.startswith("hero"):
+                hero_images.append(uri)
+                continue
+
+            slug = _slugify_menu_name(stem)
+            menu_by_slug[slug] = uri
+            menu_by_tokens[_tokenize_menu_name(stem)] = uri
+
+        if hero_images or menu_by_slug:
+            assets[cuisine_key] = {
+                "hero": hero_images,
+                "menu_by_slug": menu_by_slug,
+                "menu_by_tokens": menu_by_tokens,
+            }
+
+    return assets
+
+
+TEMPLATE_ASSET_CACHE = _load_template_assets()
+
+
+def get_template_hero_images(cuisine: str) -> List[str]:
+    data = TEMPLATE_ASSET_CACHE.get((cuisine or "").lower()) or {}
+    return list(data.get("hero") or [])
+
+
+def get_template_menu_image(cuisine: str, name: str) -> Optional[str]:
+    if not name:
+        return None
+    key = (cuisine or "").lower()
+    data = TEMPLATE_ASSET_CACHE.get(key)
+    if not data:
+        return None
+
+    slug = _slugify_menu_name(name)
+    menu_by_slug: Dict[str, str] = data.get("menu_by_slug") or {}
+    menu_by_tokens: Dict[frozenset, str] = data.get("menu_by_tokens") or {}
+
+    if slug in menu_by_slug:
+        return menu_by_slug[slug]
+    if slug.endswith("s") and slug[:-1] in menu_by_slug:
+        return menu_by_slug[slug[:-1]]
+    if slug + "s" in menu_by_slug:
+        return menu_by_slug[slug + "s"]
+
+    token_key = _tokenize_menu_name(name)
+    if token_key in menu_by_tokens:
+        return menu_by_tokens[token_key]
+    return None
 # Cache for inlined SVG bg
 _MOBILE_BG_DATA_URI: Optional[str] = None
 
@@ -684,6 +778,13 @@ async def select_hero_images(details: Dict[str, Any], cuisine: str) -> List[str]
     for img_url in gal[:2]:
         images.append(img_url)
 
+    # 1b) Add curated template heroes for this cuisine if available
+    for hero_uri in get_template_hero_images(cuisine):
+        if len(images) >= 4:
+            break
+        if hero_uri and hero_uri not in images:
+            images.append(hero_uri)
+
     # 2) Try Pexels for a matching interior if we still need images
     try:
         name = (details.get("name") or "").strip()
@@ -773,20 +874,23 @@ async def _get_best_menu_image(item: Dict[str, Any], cuisine: str) -> str:
     """Get the best available image for a menu item"""
     img = (item.get("img") or "").strip()
 
-    # 1) Google image search for specific dishes
-    if img.startswith("gq:"):
-        query = img[3:].strip()
-        found = await google_image_search(f"{query} restaurant dish", num=3)
-        if found:
-            return found
-
-    # 2) Provided image if valid
+    # 1) Provided image if valid (explicit HTTP URL)
     if img and img.startswith(("http://", "https://")):
         v = await ensure_valid_image_url(img)
         if v:
             return v
 
     name = (item.get("name") or "").strip()
+    template_img = get_template_menu_image(cuisine, name)
+    if template_img:
+        return template_img
+
+    # 1) Google image search for specific dishes
+    if img.startswith("gq:"):
+        query = img[3:].strip()
+        found = await google_image_search(f"{query} restaurant dish", num=3)
+        if found:
+            return found
 
     # 3) Try search by item name (Google CSE then Pexels)
     if name:

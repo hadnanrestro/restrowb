@@ -17,7 +17,7 @@ async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, 
     get_restaurant_context = getattr(_app, "get_restaurant_context")
     best_logo_with_color = getattr(_app, "best_logo_with_color")
     select_theme_colors = getattr(_app, "select_theme_colors")
-    select_hero_images = getattr(_app, "select_hero_images")
+    get_template_hero_images = getattr(_app, "get_template_hero_images")
     resolve_menu_images = getattr(_app, "resolve_menu_images")
     try_enrich_menu_from_site = getattr(_app, "try_enrich_menu_from_site")
     five_star_only = getattr(_app, "five_star_only")
@@ -54,8 +54,10 @@ async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, 
     log.info("BUILD PAGE: name=%s cuisine=%s context=%s colors=%s logo_color=%s",
              name, cuisine, context["atmosphere"], pal["primary"], logo_color)
     
-    # Smart hero image selection (prefers interior shots from Google, then curated Unsplash)
-    hero_imgs: List[str] = await select_hero_images(details, cuisine)
+    # Website hero images should always use curated template assets.
+    hero_imgs: List[str] = get_template_hero_images(cuisine)
+    if not hero_imgs:
+        hero_imgs = [HERO_FALLBACK_URL]
 
     # Build menu the same way as mobile: first enrich from site, then resolve images
     try:
@@ -74,6 +76,57 @@ async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, 
         for it in raw_menu_items
     ]
 
+    hrs = hours_list(details)
+
+    def _nice_join(values: List[str]) -> str:
+        cleaned = [v for v in values if v]
+        if not cleaned:
+            return ""
+        if len(cleaned) == 1:
+            return cleaned[0]
+        if len(cleaned) == 2:
+            return f"{cleaned[0]} and {cleaned[1]}"
+        return ", ".join(cleaned[:-1]) + f", and {cleaned[-1]}"
+
+    signature_copy = _nice_join([it["name"] for it in menu_items][:3])
+    if signature_copy:
+        signature_copy = f"Guests rave about {signature_copy}."
+    else:
+        signature_copy = "Guests love our chef-crafted specials and seasonal tastings."
+
+    if context.get("is_upscale"):
+        atmosphere_copy = "Soft lighting and polished service make it ideal for celebrations and date nights."
+    elif context.get("is_fast_food"):
+        atmosphere_copy = "Fast-casual energy with quick counter service and comfy seating for laid-back hangs."
+    else:
+        atmosphere_copy = "Relaxed dining room that feels warm, welcoming, and perfect for gatherings."
+
+    today_name = time.strftime("%A")
+    today_hours = None
+    for day, hours in hrs or []:
+        if day.lower().startswith(today_name[:3].lower()):
+            today_hours = hours
+            break
+
+    if details.get("open_now"):
+        service_tip = "Open now — swing by or order ahead."
+    elif today_hours:
+        service_tip = f"{today_name}'s hours: {today_hours}."
+    else:
+        service_tip = "Order ahead for pickup or plan a relaxed dine-in visit."
+
+    if phone:
+        experience_cta = f"Planning something special? Call us at {phone} to chat about catering and private events."
+    else:
+        experience_cta = "Planning something special? Ask about catering and private events when you visit."
+
+    experience_tiles = [
+        {"icon": "⭐", "title": "Signature Plates", "desc": signature_copy},
+        {"icon": "🛋️", "title": "Ambience", "desc": atmosphere_copy},
+        {"icon": "📅", "title": "Good to Know", "desc": service_tip},
+        {"icon": "🥂", "title": "Make It Memorable", "desc": experience_cta},
+    ]
+
     # Rest of the function remains the same...
     revs = five_star_only(details)
     show_reviews = len(revs) >= 2
@@ -86,8 +139,6 @@ async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, 
         if u and u not in gallery:
             gallery.append(u)
     gallery = gallery[:4]
-    
-    hrs = hours_list(details)
     fallback_foto = assets.get("fallback") or HERO_FALLBACK_URL
 
     # Continue with HTML generation using the dynamic palette...
@@ -125,16 +176,26 @@ tailwind.config = {{
 <style>
   html,body{{background:linear-gradient(#FBF8F3,#F5F2ED) fixed; color:#1B1B1B;}}
   .glass{{background:rgba(255,255,255,.55); backdrop-filter: blur(12px); border:1px solid rgba(0,0,0,.06);}}
+  /* Enhanced button styles (subtle, elegant, non-invasive) */
+  :root{{ --brand: {pal['primary']}; --brand-dark: {pal['primary_dark']}; }}
+  .btn-base{{display:inline-flex;align-items:center;gap:.6rem;padding:.55rem .95rem;border-radius:12px;font-weight:600;transition:transform .18s ease,box-shadow .18s ease,opacity .12s;cursor:pointer;border:0}}
+  .btn-primary{{background:linear-gradient(180deg,var(--brand) 0%,var(--brand-dark) 100%);color:#fff;box-shadow:0 8px 22px rgba(0,0,0,0.11), inset 0 -2px 8px rgba(0,0,0,0.06)}}
+  .btn-primary:hover{{transform:translateY(-3px);box-shadow:0 14px 36px rgba(0,0,0,0.14)}}
+  .btn-ghost{{background:transparent;border:1px solid rgba(0,0,0,0.08);color:rgba(0,0,0,0.9);box-shadow:0 6px 18px rgba(0,0,0,0.03)}}
+  .btn-pill{{border-radius:28px;padding:.55rem 1.05rem}}
+  .btn-focus:focus{{outline:3px solid rgba(0,0,0,0.06);outline-offset:2px}}
   .fade-wrap{{position:relative;height:clamp(320px,60vh,820px);overflow:hidden;border-radius:1.5rem}}
   @media (min-width:1024px){{.fade-wrap{{height:clamp(420px,62vh,880px)}}}}
   @media (min-width:1536px){{.fade-wrap{{height:clamp(520px,64vh,920px)}}}}
   .fade-wrap img{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;opacity:0;transition:opacity 900ms ease-in-out;filter:saturate(1.05) contrast(1.06) brightness(0.98);transform-origin:center;animation:hero-zoom 18s ease-in-out infinite alternate}}
   .fade-wrap img.active{{opacity:1}}
   @keyframes hero-zoom{{from{{transform:scale(1.02)}}to{{transform:scale(1.08)}}}}
-  .dot{{width:8px;height:8px;border-radius:9999px;background:#0003}}
+  .dot{{width:8px;height:8px;border-radius:9999px;background:#0003;transition:all .18s}}
   @media (min-width:1536px){{.dot{{width:10px;height:10px}}}}
-  .dot.active{{background:{pal['primary']};}}
+  .dot.active{{background:{pal['primary']};transform:scale(1.15);box-shadow:0 6px 18px rgba(0,0,0,0.12)}}
   .card{{background:#FFF;border-radius:1.25rem;box-shadow:var(--tw-shadow, 0 10px 30px rgba(0,0,0,.10));}}
+  /* Slightly lift hero info to feel integrated with the image */
+  .glass.rounded-3xl.p-6{{position:relative;z-index:6}}
 </style>
 <meta http-equiv="Content-Security-Policy"
   content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; connect-src 'self' https:">
@@ -156,7 +217,7 @@ tailwind.config = {{
         <li><a href="#contact" class="hover:text-brand">Contact</a></li>
       </ul>
       <div class="flex items-center gap-2">
-        <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition">Order Online</a>
+        <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="btn-base btn-primary btn-pill" aria-label="Order Online">Order Online</a>
       </div>
     </nav>
   </header>
@@ -181,8 +242,8 @@ tailwind.config = {{
               </div>
             </div>
             <div class="mt-6 md:mt-0 shrink-0 flex gap-3">
-              <a href="#menu" class="px-5 py-3 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition">See Menu</a>
-              <a href="{safe(map_url)}" target="_blank" rel="noopener" class="px-5 py-3 rounded-xl border border-black/10 hover:bg-black/5 transition">Get Directions</a>
+              <a href="#menu" class="btn-base btn-primary btn-pill" role="button">See Menu</a>
+              <a href="{safe(map_url)}" target="_blank" rel="noopener" class="btn-base btn-ghost btn-pill" role="button">Get Directions</a>
             </div>
           </div>
         </div>
@@ -196,8 +257,8 @@ tailwind.config = {{
   <section id="menu" class="mt-12 md:mt-16">
     <div class="{CONTAINER}">
       <div class="flex items-end justify-between gap-4">
-        <h2 class="font-display text-3xl md:text-4xl">Menu Highlights</h2>
-        <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition shadow-soft">Order Online</a>
+  <h2 class="font-display text-3xl md:text-4xl">Menu Highlights</h2>
+  <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="btn-base btn-primary btn-pill">Order Online</a>
       </div>
       <div class="mt-6 grid md:grid-cols-2 lg:grid-cols-3 gap-7">
         {"".join([f"""
@@ -303,7 +364,7 @@ tailwind.config = {{
           <p class="mt-2"><a class="underline" href="{safe(map_url)}" target="_blank" rel="noopener">Google Maps</a></p>
         </div>
         <div class="flex items-end md:items-center md:justify-end">
-          <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-brand text-white font-semibold hover:bg-brandd transition">Book / Order</a>
+          <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="btn-base btn-primary btn-pill">Book / Order</a>
         </div>
       </div>
       <div class="mt-6 text-center opacity-70">
