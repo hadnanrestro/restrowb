@@ -175,8 +175,8 @@ tailwind.config = {{
 </script>
 <style>
   html,body{{background:linear-gradient(#FBF8F3,#F5F2ED) fixed; color:#1B1B1B; margin:0; min-height:100%;}}
-  .container-shell{{width:min(96vw,1620px);margin:0 auto;padding-inline:clamp(1.5rem,5vw,6rem);}}
-  @media (min-width:1800px){{.container-shell{{width:min(92vw,1800px);}}}}
+  .container-shell{{width:clamp(320px,94vw,2000px);margin:0 auto;padding-inline:clamp(1.5rem,4vw,5.5rem);}}
+  @media (min-width:1800px){{.container-shell{{width:clamp(320px,92vw,2200px);}}}}
   .glass{{background:rgba(255,255,255,.55); backdrop-filter: blur(12px); border:1px solid rgba(0,0,0,.06);}}
   /* Enhanced button styles (subtle, elegant, non-invasive) */
   :root{{ --brand: {pal['primary']}; --brand-dark: {pal['primary_dark']}; }}
@@ -199,15 +199,16 @@ tailwind.config = {{
   @media (min-width:1536px){{.dot{{width:10px;height:10px}}}}
   .dot.active{{background:{pal['primary']};transform:scale(1.15);box-shadow:0 6px 18px rgba(0,0,0,0.12)}}
   .card{{background:#FFF;border-radius:1.25rem;box-shadow:var(--tw-shadow, 0 10px 30px rgba(0,0,0,.10));}}
-  .experience-grid{margin-top:2.2rem;display:grid;gap:1.6rem;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));}
-  .experience-card{position:relative;padding:1.75rem;border-radius:1.6rem;background:linear-gradient(150deg,rgba(255,255,255,.96),rgba(255,255,255,.78));border:1px solid rgba(0,0,0,.035);box-shadow:0 22px 45px rgba(0,0,0,.08);transition:transform .25s ease, box-shadow .25s ease;overflow:hidden;}
-  .experience-card::after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(255,255,255,.0),rgba(255,255,255,.35));opacity:0;transition:opacity .25s ease;}
-  .experience-card:hover{transform:translateY(-6px);box-shadow:0 28px 60px rgba(0,0,0,.14);}
-  .experience-card:hover::after{opacity:1;}
-  .experience-card .emoji{display:inline-flex;align-items:center;justify-content:center;width:3.05rem;height:3.05rem;border-radius:1.05rem;background:linear-gradient(135deg,{pal['primary']}22,{pal['primary_dark']}33);font-size:1.5rem;box-shadow:0 10px 18px rgba(0,0,0,.08);}
-  .experience-card h3{margin-top:1.2rem;font-weight:600;font-size:1.1rem;letter-spacing:-0.01em;}
-  .experience-card p{margin-top:.65rem;font-size:.96rem;line-height:1.6;opacity:.82;}
-  .experience-card .tag{display:inline-flex;align-items:center;padding:.38rem .85rem;margin-top:1.1rem;border-radius:999px;background:{pal['primary']}13;color:{pal['primary_dark']};font-size:.75rem;letter-spacing:.08em;font-weight:600;}
+  .experience-grid{{margin-top:2.2rem;display:grid;gap:1.6rem;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));}}
+  .experience-card{{position:relative;padding:1.85rem;border-radius:1.7rem;background:linear-gradient(150deg,rgba(255,255,255,.96),rgba(255,255,255,.78));border:1px solid rgba(0,0,0,.035);box-shadow:0 22px 45px rgba(0,0,0,.08);transition:transform .25s ease, box-shadow .25s ease;overflow:hidden;}}
+  .experience-card::after{{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(255,255,255,.0),rgba(255,255,255,.35));opacity:0;transition:opacity .25s ease;}}
+  .experience-card:hover{{transform:translateY(-6px);box-shadow:0 28px 60px rgba(0,0,0,.14);}}
+  .experience-card:hover::after{{opacity:1;}}
+  .experience-card .emoji{{display:inline-flex;align-items:center;justify-content:center;width:3.1rem;height:3.1rem;border-radius:1.1rem;background:linear-gradient(135deg,{pal['primary']}22,{pal['primary_dark']}33);font-size:1.55rem;box-shadow:0 12px 20px rgba(0,0,0,.1);}}
+  .experience-card .body{{margin-top:1.15rem;display:flex;flex-direction:column;gap:.55rem;}}
+  .experience-card h3{{font-weight:600;font-size:1.14rem;letter-spacing:-0.01em;}}
+  .experience-card p{{font-size:.97rem;line-height:1.62;opacity:.82;}}
+  .experience-card .tag{{align-self:flex-start;display:inline-flex;align-items:center;gap:.35rem;padding:.42rem .95rem;border-radius:999px;background:{pal['primary']}15;color:{pal['primary_dark']};font-size:.75rem;letter-spacing:.08em;font-weight:600;text-transform:uppercase;}}
   /* Slightly lift hero info to feel integrated with the image */
   .glass.rounded-3xl.p-6{{position:relative;z-index:6}}
 </style>
@@ -280,9 +281,11 @@ tailwind.config = {{
           f"""
           <article class='experience-card'>
             <div class='emoji'>{safe(tile['icon'])}</div>
-            <h3>{safe(tile['title'])}</h3>
-            <p>{safe(tile['desc'])}</p>
-            <span class='tag'>{safe(tile.get('tag') or '')}</span>
+            <div class='body'>
+              <h3>{safe(tile['title'])}</h3>
+              <p>{safe(tile['desc'])}</p>
+              { (f"<span class='tag'>{safe(tile['tag'])}</span>" if tile.get('tag') else '') }
+            </div>
           </article>
           """ for tile in experience_tiles])}
       </div>
