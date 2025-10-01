@@ -1,5 +1,5 @@
 # app.py
-import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging, json, mimetypes
+import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging, json, mimetypes, copy
 from urllib.parse import urlparse, quote
 from typing import Optional, Literal, Dict, Any, List, Tuple, FrozenSet
 from pathlib import Path
@@ -69,7 +69,7 @@ GOOGLE_CSE_CX  = os.getenv("GOOGLE_CSE_CX", "")
 # Logging
 log = logging.getLogger("uvicorn.error")
 # Responsive container utility (used everywhere for consistent layout)
-CONTAINER = "mx-auto max-w-[1400px] xl:max-w-[1600px] px-4 sm:px-6 lg:px-8"
+CONTAINER = "container-shell"
 # Hero image mapping placeholder (kept for compatibility). We now source heroes from
 # Google gallery and Pexels; these lists are intentionally empty.
 HERO_BY_CUISINE = {
@@ -185,6 +185,35 @@ def get_template_menu_image(cuisine: str, name: str) -> Optional[str]:
     if token_key in menu_by_tokens:
         return menu_by_tokens[token_key]
     return None
+
+
+def hydrate_cuisine_assets_with_templates() -> None:
+    """Inject template-based hero and menu imagery into CUISINE_ASSETS defaults."""
+    try:
+        assets_map = TEMPLATE_ASSET_CACHE
+        if not assets_map:
+            return
+        for cuisine, info in CUISINE_ASSETS.items():
+            key = cuisine.lower()
+            tmpl = assets_map.get(key) or {}
+
+            hero_imgs = tmpl.get("hero") or []
+            if hero_imgs:
+                info["hero"] = list(hero_imgs)
+
+            menu_items = info.get("menu") or []
+            hydrated: List[Dict[str, Any]] = []
+            for item in menu_items:
+                name = item.get("name") or ""
+                img_uri = get_template_menu_image(cuisine, name)
+                if img_uri:
+                    hydrated.append({**item, "img": img_uri})
+                else:
+                    hydrated.append({**item})
+            if hydrated:
+                info["menu"] = hydrated
+    except Exception as exc:
+        log.warning("Failed to hydrate cuisine assets with templates: %s", exc)
 # Cache for inlined SVG bg
 _MOBILE_BG_DATA_URI: Optional[str] = None
 
@@ -331,6 +360,10 @@ class TTLCache:
 SUGGEST_CACHE = TTLCache(ttl_seconds=CACHE_TTL_SUGGEST)
 DETAILS_CACHE = TTLCache(ttl_seconds=CACHE_TTL_DETAILS)
 IMGSEARCH_CACHE = TTLCache(ttl_seconds=3600)
+DETAILS_NORM_CACHE = TTLCache(ttl_seconds=CACHE_TTL_DETAILS)
+NEARBY_CACHE = TTLCache(ttl_seconds=int(os.getenv("CACHE_TTL_NEARBY", "600")))
+TEXTSEARCH_CACHE = TTLCache(ttl_seconds=int(os.getenv("CACHE_TTL_TEXTSEARCH", "900")))
+CHAIN_COUNT_CACHE = TTLCache(ttl_seconds=int(os.getenv("CACHE_TTL_CHAIN", "900")))
 
 
 # Cache for extracted logo colors to avoid repeated processing
@@ -713,7 +746,11 @@ async def google_image_search(q: str, *, num: int = 3) -> Optional[str]:
 
 async def ensure_valid_image_url(url: str) -> str:
     """Ensure image URL is valid and accessible"""
-    if not url or not url.startswith(('http://', 'https://')):
+    if not url:
+        return ""
+    if url.startswith('data:image/'):
+        return url
+    if not url.startswith(('http://', 'https://')):
         return ""
     # Try HEAD with redirects first
     try:
@@ -874,6 +911,9 @@ async def _get_best_menu_image(item: Dict[str, Any], cuisine: str) -> str:
     """Get the best available image for a menu item"""
     img = (item.get("img") or "").strip()
 
+    if img.startswith("data:image/"):
+        return img
+
     # 1) Provided image if valid (explicit HTTP URL)
     if img and img.startswith(("http://", "https://")):
         v = await ensure_valid_image_url(img)
@@ -1004,6 +1044,7 @@ CUISINE_ASSETS: Dict[str, Dict[str, Any]] = {
         ]
     }
 }
+hydrate_cuisine_assets_with_templates()
 
 DEFAULT_CUISINE = "american"
 
@@ -1356,9 +1397,20 @@ async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Opti
         score -= 10
         reasons.append("Low review volume (<100)")
 
-    if not details.get("website"):
-        score -= 20
+    website = details.get("website")
+    if not website:
+        score -= 12
         reasons.append("No official website listed")
+    else:
+        lowered = website.lower()
+        suspicious = [
+            "doordash.com","ubereats.com","grubhub.com","postmates.com","ezcater.com",
+            "toasttab.com","opentable.com","resy.com","seamless.com","chownow.com",
+            "clover.com","facebook.com","instagram.com","linktr.ee","bit.ly","goo.gl","google.com/maps"
+        ]
+        if any(token in lowered for token in suspicious):
+            score -= 10
+            reasons.append("Website field points to third-party profile" if "facebook" in lowered or "instagram" in lowered else "Only marketplace/ordering link provided")
 
     if len(details.get("gallery") or []) < 3:
         score -= 8
@@ -1399,7 +1451,6 @@ async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Opti
         pass
 
     # Ensure we surface at least 4 reasons
-    website = details.get("website")
     most_recent_days = None
     try:
         # Try to find the most recent review days for context
@@ -1414,15 +1465,13 @@ async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Opti
         if (most_recent_days is None) or (most_recent_days is not None and most_recent_days > 30):
             reasons.append("Low recent review activity")
         if website:
-            reasons.append("Website performance/clarity unknown—optimize for mobile speed and menu visibility")
+            reasons.append("Optimize your site for mobile speed and menu visibility")
         if chain_cnt >= 1 and all('chain' not in r for r in reasons):
             reasons.append("Some nearby chain presence")
         if len(reasons) < 4:
             reasons.append("Brand consistency can be improved online")
 
     score = max(0, min(100, score))
-    score = max(0, min(100, score - 15))
-    score = max(0, min(100, score - 20))
     level = "Excellent" if score >= 85 else "Good" if score >= 70 else "Needs Work" if score >= 50 else "At Risk"
     rating = float(details.get("rating") or 0)
     reviews_ct = int(details.get("review_count") or 0)
@@ -1921,9 +1970,44 @@ async def google_details(place_id: str) -> Dict[str, Any]:
         raise HTTPException(502, f"Google error: {status} - {data.get('error_message')}")
     return data
 
+
+async def google_details_normalized(place_id: str, *, include_chain_info: bool = False) -> Dict[str, Any]:
+    """Fetch and normalize Google details with caching."""
+    if not place_id:
+        raise HTTPException(400, "Missing place_id")
+    ck = cache_key("details_norm", place_id, int(include_chain_info))
+    cached = DETAILS_NORM_CACHE.get(ck)
+    if cached is not None:
+        return copy.deepcopy(cached)
+
+    raw = await google_details(place_id)
+    norm = normalize_details_google(raw)
+
+    if include_chain_info:
+        try:
+            chain_count = await google_nearby_chain_count(
+                norm.get("name") or "",
+                norm.get("lat"),
+                norm.get("lng"),
+                norm.get("id") or place_id,
+                CHAIN_RADIUS_M,
+            )
+            norm["chain_count_nearby"] = chain_count
+            norm["is_chain_nearby"] = bool(chain_count and chain_count >= 1)
+        except Exception:
+            norm.setdefault("chain_count_nearby", 0)
+            norm.setdefault("is_chain_nearby", False)
+
+    DETAILS_NORM_CACHE.set(ck, norm)
+    return copy.deepcopy(norm)
+
 async def google_nearby_chain_count(name: str, lat: Optional[float], lng: Optional[float], self_place_id: str, radius_m: int) -> int:
     if not GOOGLE_API_KEY or lat is None or lng is None or not name:
         return 0
+    ck = cache_key("chain_count", name.lower(), round(lat, 4), round(lng, 4), radius_m)
+    cached = CHAIN_COUNT_CACHE.get(ck)
+    if cached is not None:
+        return cached
     params = {
         "keyword": name,
         "location": f"{lat},{lng}",
@@ -1941,6 +2025,7 @@ async def google_nearby_chain_count(name: str, lat: Optional[float], lng: Option
         if pid == self_place_id: continue
         if rname == target:
             count += 1
+    CHAIN_COUNT_CACHE.set(ck, count)
     return count
 
 async def google_nearby_restaurants(lat: Optional[float], lng: Optional[float], *, radius_m: int = 16093, limit: int = 60) -> List[Dict[str, Any]]:
@@ -1949,6 +2034,10 @@ async def google_nearby_restaurants(lat: Optional[float], lng: Optional[float], 
     """
     if not GOOGLE_API_KEY or lat is None or lng is None:
         return []
+    ck = cache_key("nearby_restaurants", round(lat, 4), round(lng, 4), min(radius_m, 50000), limit)
+    cached = NEARBY_CACHE.get(ck)
+    if cached is not None:
+        return copy.deepcopy(cached)
     out: List[Dict[str, Any]] = []
     page_token: Optional[str] = None
     while True:
@@ -1975,7 +2064,8 @@ async def google_nearby_restaurants(lat: Optional[float], lng: Optional[float], 
             break
         # Google requires a short delay before using next_page_token
         await asyncio.sleep(2.1)
-    return out
+    NEARBY_CACHE.set(ck, out)
+    return copy.deepcopy(out)
 
 async def google_textsearch_cuisine(
     *, lat: float, lng: float, cuisine: str, radius_m: int = 16093, limit: int = 50
@@ -2001,6 +2091,10 @@ async def google_textsearch_cuisine(
         return mapping.get(c.lower(), f"{c} restaurant")
 
     query = cuisine_query(cuisine)
+    ck = cache_key("textsearch_cuisine", query, round(lat, 4), round(lng, 4), min(radius_m, 50000), limit)
+    cached = TEXTSEARCH_CACHE.get(ck)
+    if cached is not None:
+        return copy.deepcopy(cached)
     out: List[Dict[str, Any]] = []
     page_token: Optional[str] = None
     while True:
@@ -2026,7 +2120,8 @@ async def google_textsearch_cuisine(
         if not page_token:
             break
         await asyncio.sleep(2.1)
-    return out
+    TEXTSEARCH_CACHE.set(ck, out)
+    return copy.deepcopy(out)
 
 async def nearby_same_cuisine(
     details: Dict[str, Any], *, radius_m: int = 16093, min_results: int = 7, scan_limit: int = 50, concurrency: int = 6
@@ -2070,8 +2165,7 @@ async def nearby_same_cuisine(
                 return None
             async with sem:
                 try:
-                    raw = await google_details(pid)
-                    norm = normalize_details_google(raw)
+                    norm = await google_details_normalized(pid, include_chain_info=False)
                     if cuisine_from_types(norm) != base_cuisine:
                         return None
                     return {
@@ -2171,18 +2265,7 @@ async def _fetch_details(provider: str, place_id: Optional[str], details_payload
         return details_payload
 
     if provider == "google" and place_id:
-        raw = await google_details(place_id)
-        norm = normalize_details_google(raw)
-        # try to augment chain_count_nearby; non-fatal if this fails
-        try:
-            norm["chain_count_nearby"] = await google_nearby_chain_count(
-                norm.get("name") or "",
-                norm.get("lat"), norm.get("lng"), norm.get("id"),
-                CHAIN_RADIUS_M,
-            )
-        except Exception:
-            pass
-        return norm
+        return await google_details_normalized(place_id, include_chain_info=True)
 
     if provider == "yelp" and place_id:
         raw = await yelp_business_details(place_id)
@@ -2390,8 +2473,7 @@ async def insights_negative_reviews(
 ):
     # Reuse details fetch
     if provider == "google":
-        data = await google_details(id)
-        details_payload = normalize_details_google(data)
+        details_payload = await google_details_normalized(id, include_chain_info=False)
     else:
         y = await yelp_business_details(id)
         details_payload = normalize_details_yelp(y)
@@ -2423,17 +2505,7 @@ async def insights_presence(
         if not payload.place_id:
             raise HTTPException(400, "Provide either details or place_id")
         if payload.provider == "google":
-            g = await google_details(payload.place_id)
-            details = normalize_details_google(g)
-            try:
-                chain_count = await google_nearby_chain_count(
-                    details.get("name") or "",
-                    details.get("lat"), details.get("lng"), details.get("id"), CHAIN_RADIUS_M
-                )
-            except Exception:
-                chain_count = 0
-            details["chain_count_nearby"] = chain_count
-            details["is_chain_nearby"] = bool(chain_count and chain_count >= 1)
+            details = await google_details_normalized(payload.place_id, include_chain_info=True)
         else:
             y = await yelp_business_details(payload.place_id)
             details = normalize_details_yelp(y)
@@ -2462,9 +2534,9 @@ async def insights_presence(
     if ai_multi is None:
         ai_multi = _local_insights_fallback(details, prescore, nearby, complaints)
 
-    # Nearby competitors with the same cuisine (ensure >=7 when possible)
+    # Nearby competitors with the same cuisine (target >=5 within ~5 miles)
     try:
-        same_cuisine = await nearby_same_cuisine(details, radius_m=16093, min_results=7, scan_limit=50, concurrency=6)
+        same_cuisine = await nearby_same_cuisine(details, radius_m=8047, min_results=5, scan_limit=50, concurrency=6)
     except Exception as e:
         log.warning("presence: same-cuisine nearby failed: %s", e)
         same_cuisine = []
@@ -2495,22 +2567,8 @@ async def details(
 
     if provider == "google":
         try:
-            g = await google_details(id)
-            payload = {"result": normalize_details_google(g)}
-            if include_chain_info:
-                r = payload["result"]
-                try:
-                    chain_count = await google_nearby_chain_count(
-                        r.get("name") or "",
-                        r.get("lat"),
-                        r.get("lng"),
-                        r.get("id") or id,
-                        CHAIN_RADIUS_M,
-                    )
-                except Exception:
-                    chain_count = 0
-                r["chain_count_nearby"] = chain_count
-                r["is_chain_nearby"] = bool(chain_count and chain_count >= 1)
+            result = await google_details_normalized(id, include_chain_info=include_chain_info)
+            payload = {"result": result}
         except Exception as e:
             raise HTTPException(502, f"Failed to fetch Google details: {e}")
     else:
@@ -2544,8 +2602,7 @@ async def generate_template(
         provider = (payload.provider or "google").lower()
         if provider == "google":
             try:
-                g = await google_details(payload.place_id)
-                details = normalize_details_google(g)
+                details = await google_details_normalized(payload.place_id, include_chain_info=True)
             except Exception as e:
                 raise HTTPException(502, f"Failed to fetch Google details: {e}")
         elif provider == "yelp":

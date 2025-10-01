@@ -121,10 +121,10 @@ async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, 
         experience_cta = "Planning something special? Ask about catering and private events when you visit."
 
     experience_tiles = [
-        {"icon": "⭐", "title": "Signature Plates", "desc": signature_copy},
-        {"icon": "🛋️", "title": "Ambience", "desc": atmosphere_copy},
-        {"icon": "📅", "title": "Good to Know", "desc": service_tip},
-        {"icon": "🥂", "title": "Make It Memorable", "desc": experience_cta},
+        {"icon": "⭐", "title": "Signature Plates", "desc": signature_copy, "tag": "Chef favorites"},
+        {"icon": "🛋️", "title": "Ambience", "desc": atmosphere_copy, "tag": "Atmosphere"},
+        {"icon": "📅", "title": "Good to Know", "desc": service_tip, "tag": "Today's scoop"},
+        {"icon": "🥂", "title": "Make It Memorable", "desc": experience_cta, "tag": "Plan ahead"},
     ]
 
     # Rest of the function remains the same...
@@ -174,7 +174,9 @@ tailwind.config = {{
 }}
 </script>
 <style>
-  html,body{{background:linear-gradient(#FBF8F3,#F5F2ED) fixed; color:#1B1B1B;}}
+  html,body{{background:linear-gradient(#FBF8F3,#F5F2ED) fixed; color:#1B1B1B; margin:0; min-height:100%;}}
+  .container-shell{{width:min(96vw,1620px);margin:0 auto;padding-inline:clamp(1.5rem,5vw,6rem);}}
+  @media (min-width:1800px){{.container-shell{{width:min(92vw,1800px);}}}}
   .glass{{background:rgba(255,255,255,.55); backdrop-filter: blur(12px); border:1px solid rgba(0,0,0,.06);}}
   /* Enhanced button styles (subtle, elegant, non-invasive) */
   :root{{ --brand: {pal['primary']}; --brand-dark: {pal['primary_dark']}; }}
@@ -182,18 +184,30 @@ tailwind.config = {{
   .btn-primary{{background:linear-gradient(180deg,var(--brand) 0%,var(--brand-dark) 100%);color:#fff;box-shadow:0 8px 22px rgba(0,0,0,0.11), inset 0 -2px 8px rgba(0,0,0,0.06)}}
   .btn-primary:hover{{transform:translateY(-3px);box-shadow:0 14px 36px rgba(0,0,0,0.14)}}
   .btn-ghost{{background:transparent;border:1px solid rgba(0,0,0,0.08);color:rgba(0,0,0,0.9);box-shadow:0 6px 18px rgba(0,0,0,0.03)}}
+  .btn-ghost:hover{{background:rgba(0,0,0,0.03);transform:translateY(-2px);box-shadow:0 12px 26px rgba(0,0,0,0.08)}}
   .btn-pill{{border-radius:28px;padding:.55rem 1.05rem}}
   .btn-focus:focus{{outline:3px solid rgba(0,0,0,0.06);outline-offset:2px}}
-  .fade-wrap{{position:relative;height:clamp(320px,60vh,820px);overflow:hidden;border-radius:1.5rem}}
+  .fade-wrap{{position:relative;height:clamp(320px,60vh,820px);overflow:hidden;border-radius:1.5rem;box-shadow:0 25px 55px rgba(0,0,0,.18)}}
   @media (min-width:1024px){{.fade-wrap{{height:clamp(420px,62vh,880px)}}}}
   @media (min-width:1536px){{.fade-wrap{{height:clamp(520px,64vh,920px)}}}}
   .fade-wrap img{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;opacity:0;transition:opacity 900ms ease-in-out;filter:saturate(1.05) contrast(1.06) brightness(0.98);transform-origin:center;animation:hero-zoom 18s ease-in-out infinite alternate}}
+  .fade-wrap::after{{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(180deg,rgba(0,0,0,.18) 0%,rgba(0,0,0,0) 55%);mix-blend-mode:multiply;pointer-events:none;opacity:.65}}
+  .fade-wrap::before{{content:"";position:absolute;inset:0;border-radius:inherit;border:1px solid rgba(255,255,255,.25);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);pointer-events:none}}
   .fade-wrap img.active{{opacity:1}}
   @keyframes hero-zoom{{from{{transform:scale(1.02)}}to{{transform:scale(1.08)}}}}
   .dot{{width:8px;height:8px;border-radius:9999px;background:#0003;transition:all .18s}}
   @media (min-width:1536px){{.dot{{width:10px;height:10px}}}}
   .dot.active{{background:{pal['primary']};transform:scale(1.15);box-shadow:0 6px 18px rgba(0,0,0,0.12)}}
   .card{{background:#FFF;border-radius:1.25rem;box-shadow:var(--tw-shadow, 0 10px 30px rgba(0,0,0,.10));}}
+  .experience-grid{margin-top:2.2rem;display:grid;gap:1.6rem;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));}
+  .experience-card{position:relative;padding:1.75rem;border-radius:1.6rem;background:linear-gradient(150deg,rgba(255,255,255,.96),rgba(255,255,255,.78));border:1px solid rgba(0,0,0,.035);box-shadow:0 22px 45px rgba(0,0,0,.08);transition:transform .25s ease, box-shadow .25s ease;overflow:hidden;}
+  .experience-card::after{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(255,255,255,.0),rgba(255,255,255,.35));opacity:0;transition:opacity .25s ease;}
+  .experience-card:hover{transform:translateY(-6px);box-shadow:0 28px 60px rgba(0,0,0,.14);}
+  .experience-card:hover::after{opacity:1;}
+  .experience-card .emoji{display:inline-flex;align-items:center;justify-content:center;width:3.05rem;height:3.05rem;border-radius:1.05rem;background:linear-gradient(135deg,{pal['primary']}22,{pal['primary_dark']}33);font-size:1.5rem;box-shadow:0 10px 18px rgba(0,0,0,.08);}
+  .experience-card h3{margin-top:1.2rem;font-weight:600;font-size:1.1rem;letter-spacing:-0.01em;}
+  .experience-card p{margin-top:.65rem;font-size:.96rem;line-height:1.6;opacity:.82;}
+  .experience-card .tag{display:inline-flex;align-items:center;padding:.38rem .85rem;margin-top:1.1rem;border-radius:999px;background:{pal['primary']}13;color:{pal['primary_dark']};font-size:.75rem;letter-spacing:.08em;font-weight:600;}
   /* Slightly lift hero info to feel integrated with the image */
   .glass.rounded-3xl.p-6{{position:relative;z-index:6}}
 </style>
@@ -254,11 +268,32 @@ tailwind.config = {{
     </div>
   </section>
 
+  <section id="experience" class="mt-12 md:mt-16">
+    <div class="{CONTAINER}">
+      <span class="section-badge">Make the most of your visit</span>
+      <div class="mt-4 max-w-3xl">
+        <h2 class="font-display text-3xl md:text-4xl">Little touches guests appreciate</h2>
+        <p class="mt-2 text-[17px] leading-7 opacity-80">A quick snapshot so you know exactly what to expect.</p>
+      </div>
+      <div class="experience-grid">
+        {"".join([
+          f"""
+          <article class='experience-card'>
+            <div class='emoji'>{safe(tile['icon'])}</div>
+            <h3>{safe(tile['title'])}</h3>
+            <p>{safe(tile['desc'])}</p>
+            <span class='tag'>{safe(tile.get('tag') or '')}</span>
+          </article>
+          """ for tile in experience_tiles])}
+      </div>
+    </div>
+  </section>
+
   <section id="menu" class="mt-12 md:mt-16">
     <div class="{CONTAINER}">
       <div class="flex items-end justify-between gap-4">
-  <h2 class="font-display text-3xl md:text-4xl">Menu Highlights</h2>
-  <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="btn-base btn-primary btn-pill">Order Online</a>
+        <h2 class="font-display text-3xl md:text-4xl">Menu Highlights</h2>
+        <a href="{safe(website or map_url)}" target="_blank" rel="noopener" class="btn-base btn-primary btn-pill">Order Online</a>
       </div>
       <div class="mt-6 grid md:grid-cols-2 lg:grid-cols-3 gap-7">
         {"".join([f"""
