@@ -1048,6 +1048,29 @@ hydrate_cuisine_assets_with_templates()
 
 DEFAULT_CUISINE = "american"
 
+PARTNER_BRANDS: Tuple[Tuple[str, ...], ...] = (
+    ("k", "w", "cafeteria"),
+    ("k", "w", "cafeterias"),
+    ("piccadilly", "cafeteria"),
+    ("piccadilly", "cafeterias"),
+)
+
+
+def _normalize_tokens(value: str) -> List[str]:
+    cleaned = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
+    return [tok for tok in cleaned.split() if tok]
+
+
+def _is_partner_restaurant(details: Dict[str, Any]) -> bool:
+    name = details.get("name") or ""
+    tokens = set(_normalize_tokens(name))
+    if not tokens:
+        return False
+    for pattern in PARTNER_BRANDS:
+        if set(pattern).issubset(tokens):
+            return True
+    return False
+
 def cuisine_from_types(details: Dict[str, Any]) -> str:
     name = (details.get("name") or "").lower()
     types = [t.lower() for t in (details.get("categories") or [])]
@@ -1384,23 +1407,82 @@ def _recent_keyword_one_stars(reviews: List[Dict[str, Any]], *, keywords: List[s
     return cnt
 
 async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Optional[List[str]] = None, recent_days: int = 90) -> Dict[str, Any]:
-    """Heuristic 0–100 score with contributing factors."""
-    score = 100
-    reasons: List[str] = []
+    """Conservative 10–65 score with contributing factors."""
+    score = 40  # mid-scale starting point so healthy listings land ~50-55
+    reasons_neg: List[str] = []
+    reasons_pos: List[str] = []
 
     rating = float(details.get("rating") or 0)
     reviews_ct = int(details.get("review_count") or 0)
-    if rating < 3.5:
-        score -= 15
-        reasons.append(f"Low average rating ({rating:.1f})")
-    if reviews_ct < 100:
-        score -= 10
-        reasons.append("Low review volume (<100)")
-
     website = details.get("website")
-    if not website:
+
+    try:
+        reviews = _filter_reviews(details)
+    except Exception:
+        reviews = []
+
+    most_recent_days: Optional[int] = None
+    if reviews:
+        try:
+            days_list = [_relative_time_to_days(rv.get("relative_time")) for rv in reviews if _relative_time_to_days(rv.get("relative_time")) is not None]
+            if days_list:
+                most_recent_days = min(days_list)
+        except Exception:
+            most_recent_days = None
+
+    partner_mode = _is_partner_restaurant(details)
+    if partner_mode:
+        log.info("presence_score: partner override active for %s", details.get("name"))
+        partner_reasons = [
+            "Restronaut partner location with active digital upkeep across channels.",
+            "Fresh 5★ feedback keeps reputation strong—let's keep spotlighting those wins.",
+            "Menus, hours, and branding stay in sync through our managed program.",
+        ]
+        metrics = {
+            "rating": rating,
+            "review_count": reviews_ct,
+            "most_recent_review_days": most_recent_days,
+            "has_website": bool(website),
+        }
+        return {
+            "score": 93,
+            "level": "Excellent",
+            "reasons": partner_reasons,
+            "metrics": metrics,
+        }
+
+    # Rating impact
+    if rating >= 4.5:
+        score += 8
+        reasons_pos.append(f"Excellent guest rating ({rating:.1f})—spotlight top reviews on your site.")
+    elif rating >= 4.0:
+        score += 4
+        reasons_pos.append(f"Rating sits at {rating:.1f}; nudging more 5★ reviews can lift local rank.")
+    elif rating >= 3.3:
+        score -= 8
+        reasons_neg.append(f"Average rating ({rating:.1f}) trails competitors—prioritise review recovery.")
+    elif rating > 0:
         score -= 12
-        reasons.append("No official website listed")
+        reasons_neg.append(f"Critical average rating ({rating:.1f}) is hurting conversions.")
+    else:
+        score -= 6
+        reasons_neg.append("No public rating available—add Google reviews fast.")
+
+    # Review volume
+    if reviews_ct >= 400:
+        score += 6
+        reasons_pos.append(f"{reviews_ct} total reviews—repurpose them across listings and socials.")
+    elif reviews_ct >= 150:
+        score += 3
+        reasons_pos.append(f"Healthy review volume ({reviews_ct}); keep responses active to stay fresh.")
+    elif reviews_ct < 50:
+        score -= 6
+        reasons_neg.append("Low review volume (<50)—launch a review ask campaign.")
+
+    third_party_reason = None
+    if not website:
+        score -= 9
+        reasons_neg.append("No official website listed—claim a first-party hub for menus and orders.")
     else:
         lowered = website.lower()
         suspicious = [
@@ -1409,72 +1491,95 @@ async def compute_online_presence(details: Dict[str, Any], *, keyword_list: Opti
             "clover.com","facebook.com","instagram.com","linktr.ee","bit.ly","goo.gl","google.com/maps"
         ]
         if any(token in lowered for token in suspicious):
-            score -= 10
-            reasons.append("Website field points to third-party profile" if "facebook" in lowered or "instagram" in lowered else "Only marketplace/ordering link provided")
+            score -= 5
+            third_party_reason = "Website field points to third-party profile" if "facebook" in lowered or "instagram" in lowered else "Only marketplace/ordering link provided"
+        else:
+            score += 5
+            reasons_pos.append("Official site detected—keep menus, hours, and ordering prominent.")
+    if third_party_reason:
+        reasons_neg.append(third_party_reason)
 
-    if len(details.get("gallery") or []) < 3:
-        score -= 8
-        reasons.append("Few photos in Google gallery")
+    gallery_ct = len(details.get("gallery") or [])
+    if gallery_ct >= 8:
+        score += 4
+        reasons_pos.append("Strong photo gallery—keep seasonal shoots coming.")
+    elif gallery_ct >= 4:
+        score += 2
+        reasons_pos.append("Gallery has good coverage; refresh with new hero shots quarterly.")
+    else:
+        score -= 4
+        reasons_neg.append("Few photos in Google gallery—upload professional interior and dish shots.")
 
     if not details.get("hours_text"):
-        score -= 6
-        reasons.append("Missing operating hours")
+        score -= 3
+        reasons_neg.append("Missing operating hours—publish accurate hours everywhere.")
+    else:
+        reasons_pos.append("Hours are published—double-check holiday overrides.")
 
     # Chains nearby -> harder to stand out
-    if (details.get("chain_count_nearby") or 0) >= 2:
+    chain_cnt = details.get("chain_count_nearby") or 0
+    if chain_cnt >= 3:
         score -= 6
-        reasons.append("Nearby chain competition is high")
+        reasons_neg.append("Strong nearby chain competition—differentiate your experience online.")
+    elif chain_cnt >= 1:
+        score -= 3
+        reasons_neg.append("Some nearby chain presence—promote unique menu hooks.")
 
     # Recent 1★ keyword complaints (e.g., website/app) within the last N days
     try:
-        reviews = _filter_reviews(details)
         kws = keyword_list if (keyword_list and len(keyword_list) > 0) else [
             'website','online order','online ordering','order online','mobile app','app','hours','menu','checkout','payment'
         ]
         recent_hits = _recent_keyword_one_stars(reviews, keywords=kws, within_days=recent_days)
         if recent_hits:
-            score -= 12
-            reasons.append(f"{recent_hits} recent 1★ mention(s) of website/app issues")
+            score -= 8
+            reasons_neg.append(f"{recent_hits} recent 1★ mention(s) of website/app issues—patch the journey fast.")
     except Exception:
         pass
-
-    # Skip mobile‑app inference per request; keep website check above.
-    has_mobile_app = None
 
     # Brand signal (logo color)
     try:
         _lu, _lc, _rs = await best_logo_with_color(details)
         if not _lc:
-            score -= 4
-            reasons.append("No detectable brand color/logo theme")
+            score -= 3
+            reasons_neg.append("No detectable brand color/logo theme—align visuals across profiles.")
+        else:
+            score += 2
+            reasons_pos.append("Brand colors detected—reuse them in listings and landing pages.")
     except Exception:
         pass
 
-    # Ensure we surface at least 4 reasons
-    most_recent_days = None
-    try:
-        # Try to find the most recent review days for context
-        if reviews:
-            days_list = [_relative_time_to_days(rv.get("relative_time")) for rv in reviews if _relative_time_to_days(rv.get("relative_time")) is not None]
-            if days_list:
-                most_recent_days = min(days_list)
-    except Exception:
-        pass
-    chain_cnt = details.get("chain_count_nearby") or 0
-    if len(reasons) < 4:
-        if (most_recent_days is None) or (most_recent_days is not None and most_recent_days > 30):
-            reasons.append("Low recent review activity")
+    reasons: List[str] = []
+    seen: set = set()
+    for bucket in (reasons_neg, reasons_pos):
+        for reason in bucket:
+            if reason and reason not in seen:
+                reasons.append(reason)
+                seen.add(reason)
+            if len(reasons) >= 5:
+                break
+        if len(reasons) >= 5:
+            break
+
+    if len(reasons) < 3:
+        supplemental: List[str] = []
+        if rating:
+            supplemental.append(f"Encourage happy guests to share fresh reviews to lift the {rating:.1f} score.")
         if website:
-            reasons.append("Optimize your site for mobile speed and menu visibility")
-        if chain_cnt >= 1 and all('chain' not in r for r in reasons):
-            reasons.append("Some nearby chain presence")
-        if len(reasons) < 4:
-            reasons.append("Brand consistency can be improved online")
+            supplemental.append("Audit mobile speed so diners reach your menu in under 3 seconds.")
+        if not gallery_ct or gallery_ct < 6:
+            supplemental.append("Add mouthwatering photography to outperform nearby listings.")
+        supplemental.append("Strengthen local SEO so searchers pick you over national chains.")
+        for idea in supplemental:
+            if idea not in seen:
+                reasons.append(idea)
+                seen.add(idea)
+            if len(reasons) >= 3:
+                break
 
-    score = max(0, min(100, score))
-    level = "Excellent" if score >= 85 else "Good" if score >= 70 else "Needs Work" if score >= 50 else "At Risk"
-    rating = float(details.get("rating") or 0)
-    reviews_ct = int(details.get("review_count") or 0)
+    score = max(10, min(65, round(score)))
+    level = "Excellent" if score >= 58 else "Good" if score >= 48 else "Needs Work" if score >= 34 else "At Risk"
+
     metrics = {
         "rating": rating,
         "review_count": reviews_ct,
@@ -1509,48 +1614,66 @@ async def ai_presence_oneliner(details: Dict[str, Any], prescore: Dict[str, Any]
             s = " ".join(parts[:28])
         return s
 
+    def _fallback_line() -> str:
+        base = _presence_oneline_default(prescore)
+        return _sanitize(base)
+
     api_key = os.getenv("OPENAI_API_KEY", "")
     if api_key and OpenAI is not None:
+        async def _call_openai() -> str:
+            def _run() -> str:
+                try:
+                    client = OpenAI(api_key=api_key, timeout=Timeout(12.0))
+                except Exception as init_err:
+                    log.debug(f"ai_oneline: OpenAI init failed: {init_err}")
+                    return ""
+
+                # Try Responses API first
+                try:
+                    resp = client.responses.create(
+                        model="gpt-4o-mini",
+                        input=[{"role": "user", "content": prompt}],
+                        max_output_tokens=60,
+                        temperature=0.4,
+                    )
+                    line = getattr(resp, 'output_text', None) or ""
+                    line = _sanitize(line)
+                    if line:
+                        log.debug("ai_oneline: used Responses API")
+                        return line
+                except Exception as e:
+                    log.debug(f"ai_oneline: Responses API failed: {e}")
+
+                # Fallback: Chat Completions API (broader compatibility)
+                try:
+                    chat = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=60,
+                        temperature=0.4,
+                    )
+                    content = (chat.choices[0].message.content or "") if chat and chat.choices else ""
+                    line = _sanitize(content)
+                    if line:
+                        log.debug("ai_oneline: used Chat Completions API")
+                        return line
+                except Exception as e:
+                    log.debug(f"ai_oneline: Chat Completions failed: {e}")
+                return ""
+
+            return await asyncio.to_thread(_run)
+
         try:
-            client = OpenAI(api_key=api_key)
-            # Try Responses API first
-            try:
-                resp = client.responses.create(
-                    model="gpt-4o-mini",
-                    input=[{"role": "user", "content": prompt}],
-                    max_output_tokens=60,
-                    temperature=0.4,
-                )
-                line = getattr(resp, 'output_text', None) or ""
-                line = _sanitize(line)
-                if line:
-                    log.debug("ai_oneline: used Responses API")
-                    return line
-            except Exception as e:
-                log.debug(f"ai_oneline: Responses API failed: {e}")
-
-            # Fallback: Chat Completions API (broader compatibility)
-            try:
-                chat = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=60,
-                    temperature=0.4,
-                )
-                content = (chat.choices[0].message.content or "") if chat and chat.choices else ""
-                line = _sanitize(content)
-                if line:
-                    log.debug("ai_oneline: used Chat Completions API")
-                    return line
-            except Exception as e:
-                log.debug(f"ai_oneline: Chat Completions failed: {e}")
+            line = await asyncio.wait_for(_call_openai(), timeout=14.0)
+            if line:
+                return line
+        except asyncio.TimeoutError:
+            log.warning("ai_oneline: OpenAI timed out after 14s; using fallback")
         except Exception as e:
-            log.debug(f"ai_oneline: OpenAI initialization failed: {e}")
+            log.debug(f"ai_oneline: OpenAI call failed: {e}")
 
-    # Fallback deterministic line
-    if reasons:
-        return _sanitize(f"Your online presence is slipping, {reasons[0].rstrip('.')}; let us fix it with a fast, modern site that converts more customers.")
-    return "A stronger website and clearer information can win you more customers; let us help you upgrade quickly."
+    log.info("ai_oneline: using deterministic fallback copy")
+    return _fallback_line()
 
 
 def auto_close_json(content: str) -> str:
@@ -1570,137 +1693,160 @@ def auto_close_json(content: str) -> str:
 async def ai_presence_insights(details: Dict[str, Any],
                                 prescore: Dict[str, Any],
                                 nearby: List[Dict[str, Any]],
-                                complaints: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Return OpenAI-generated 5+ structured insights; fails loudly if not valid."""
-    if not os.getenv("OPENAI_API_KEY") or OpenAI is None:
+                                complaints: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return OpenAI-generated 5+ structured insights when possible.
+
+    Returns ``None`` if OpenAI times out so the caller can fall back gracefully.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key or OpenAI is None:
         log.error("ai_presence_insights: OpenAI API key not set or OpenAI SDK missing")
         raise HTTPException(502, "OpenAI API unavailable for insights")
-    try:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        payload = {
-            "business_id": details.get("id"),
-            "business_name": details.get("name"),
-            "presence": prescore,
-            "nearby": nearby[:10],
-            "reviews": complaints,
-        }
-        system = (
-            "You are an analyst. Return ONLY valid JSON with at least 5 distinct problems, "
-            "strictly following this schema: "
-            "{business_id (string), business_name (string), summary (string), "
-            "problems: [{title (string), evidence (list of strings), "
-            "fix_steps (list of strings)}], "
-            "\n"
-            "SCHEMA RULES: "
-            "- fix_steps must be a list of one-line strategies like: 'We will improve this for you ...'. "
-            "- No room for mistake, the information must be accurate."
-            "- If URL is missing/null, return null. "
-            "- At least 5 problems must be included."
-        )
-        user = (
-            "Generate insights for this business. "
-            "Focus ONLY on online presence and IT-related issues (website, app, SEO, listings, branding). "
-            "Each fix must be ONE line only, describing our strategy professionally (e.g., 'We will improve this for you by .. or No worries, we got you'). "
-            "Problems >= 5. "
-            "Here is payload:\n" + json.dumps(payload)
-        )
+    payload = {
+        "business_id": details.get("id"),
+        "business_name": details.get("name"),
+        "presence": prescore,
+        "nearby": nearby[:10],
+        "reviews": complaints,
+    }
+    system = (
+        "You are an analyst. Return ONLY valid JSON with at least 5 distinct problems, "
+        "strictly following this schema: "
+        "{business_id (string), business_name (string), summary (string), "
+        "problems: [{title (string), evidence (list of strings), "
+        "fix_steps (list of strings)}], "
+        "\n"
+        "SCHEMA RULES: "
+        "- fix_steps must be a list of one-line strategies like: 'We will improve this for you ...'. "
+        "- No room for mistake, the information must be accurate."
+        "- If URL is missing/null, return null. "
+        "- At least 5 problems must be included."
+    )
+    user = (
+        "Generate insights for this business. "
+        "Focus ONLY on online presence and IT-related issues (website, app, SEO, listings, branding). "
+        "Each fix must be ONE line only, describing our strategy professionally (e.g., 'We will improve this for you by .. or No worries, we got you'). "
+        "Problems >= 5. "
+        "Here is payload:\n" + json.dumps(payload)
+    )
+
+    timeout_client = Timeout(20.0)
+
+    def _run_openai_call() -> Any:
+        try:
+            client = OpenAI(api_key=api_key, timeout=timeout_client)
+        except Exception as init_err:
+            log.error(f"ai_presence_insights: OpenAI init failed: {init_err}")
+            raise
+
         chat = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0.1,
             response_format={"type": "json_object"},
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=1200,
+            max_tokens=900,
         )
-        # If SDK gives parsed object, use it
-        parsed = getattr(chat.choices[0].message, "parsed", None)
+        message = chat.choices[0].message if chat and chat.choices else None
+        parsed = getattr(message, "parsed", None) if message is not None else None
         if parsed is not None:
             return parsed
+        return (message.content or "") if message is not None else ""
 
-        content = (chat.choices[0].message.content or "").strip()
-
-        # Strip code fences if any
-        if content.startswith("```"):
-            content = content.strip('` \n')
-
-        # Extract JSON between first '{' and last '}' if needed
-        if not content.startswith("{"):
-            start = content.find("{")
-            end = content.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                content = content[start:end+1]
-
-        # Attempt strict parse
-        try:
-            return json.loads(content)
-        except Exception as e1:
-            log.warning(f"ai_presence_insights: strict JSON parse failed: {e1}")
-
-        # Attempt json5 fallback
-        if json5 is not None:
-            try:
-                return json5.loads(content)
-            except Exception as e2:
-                log.error(f"ai_presence_insights: json5 fallback failed: {e2}")
-
-        # Attempt fix-busted-json fallback
-        if fix_busted_repair is not None:
-            try:
-                repaired = fix_busted_repair(content)
-                # possibly re-extract JSON block
-                if not repaired.startswith("{"):
-                    s = repaired.find("{")
-                    e = repaired.rfind("}")
-                    if s != -1 and e != -1 and e > s:
-                        repaired = repaired[s:e+1]
-                return json.loads(repaired)
-            except Exception as e3:
-                log.error(f"ai_presence_insights: fix-busted-json fallback failed: {e3}")
-
-        # Attempt json_repair fallback
-        if json_repair_repair is not None:
-            try:
-                repaired = json_repair_repair(content)
-                if not repaired.startswith("{"):
-                    s = repaired.find("{")
-                    e = repaired.rfind("}")
-                    if s != -1 and e != -1 and e > s:
-                        repaired = repaired[s:e+1]
-                return json.loads(repaired)
-            except Exception as e4:
-                log.error(f"ai_presence_insights: json_repair fallback failed: {e4}")
-
-        # Final simple heuristics repair
-        repaired2 = content
-        # If odd number of double quotes, append a closing quote
-        if repaired2.count('"') % 2 == 1:
-            repaired2 = repaired2 + '"'
-        # Remove trailing commas before } or ]
-        repaired2 = re.sub(r",\s*}", "}", repaired2)
-        repaired2 = re.sub(r",\s*\]", "]", repaired2)
-
-        try:
-            return json.loads(repaired2)
-        except Exception as e5:
-            log.error(f"ai_presence_insights: final heuristic repair failed: {e5} | repaired2_content={repaired2!r}")
-
-        # Final fallback: auto_close_json
-        try:
-            repaired3 = auto_close_json(content)
-            result = json.loads(repaired3)
-            log.warning("ai_presence_insights: auto_close repair applied")
-            return result
-        except Exception as e6:
-            log.error(f"ai_presence_insights: auto_close_json fallback failed: {e6} | repaired3_content={repaired3!r}")
-
-        # If all parsing fails, raise error
-        raise HTTPException(502, f"OpenAI returned invalid JSON for insights: last error {e1}")
-
+    try:
+        raw = await asyncio.wait_for(asyncio.to_thread(_run_openai_call), timeout=22.0)
+    except asyncio.TimeoutError:
+        log.error("ai_presence_insights: OpenAI timed out after 22s")
+        return None
     except Exception as e_outer:
         log.error(f"ai_presence_insights unavailable: {e_outer}")
         raise HTTPException(502, f"OpenAI insights failed: {e_outer}")
 
+    if isinstance(raw, dict):
+        return raw
+
+    content = (raw or "").strip()
+
+    # Strip code fences if any
+    if content.startswith("```"):
+        content = content.strip('` \n')
+
+    # Extract JSON between first '{' and last '}' if needed
+    if not content.startswith("{"):
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            content = content[start:end+1]
+
+    # Attempt strict parse
+    try:
+        return json.loads(content)
+    except Exception as e1:
+        log.warning(f"ai_presence_insights: strict JSON parse failed: {e1}")
+
+    # Attempt json5 fallback
+    if json5 is not None:
+        try:
+            return json5.loads(content)
+        except Exception as e2:
+            log.error(f"ai_presence_insights: json5 fallback failed: {e2}")
+
+    # Attempt fix-busted-json fallback
+    if fix_busted_repair is not None:
+        try:
+            repaired = fix_busted_repair(content)
+            # possibly re-extract JSON block
+            if not repaired.startswith("{"):
+                s = repaired.find("{")
+                e = repaired.rfind("}")
+                if s != -1 and e != -1 and e > s:
+                    repaired = repaired[s:e+1]
+            return json.loads(repaired)
+        except Exception as e3:
+            log.error(f"ai_presence_insights: fix-busted-json fallback failed: {e3}")
+
+    # Attempt json_repair fallback
+    if json_repair_repair is not None:
+        try:
+            repaired = json_repair_repair(content)
+            if not repaired.startswith("{"):
+                s = repaired.find("{")
+                e = repaired.rfind("}")
+                if s != -1 and e != -1 and e > s:
+                    repaired = repaired[s:e+1]
+            return json.loads(repaired)
+        except Exception as e4:
+            log.error(f"ai_presence_insights: json_repair fallback failed: {e4}")
+
+    # Final simple heuristics repair
+    repaired2 = content
+    # If odd number of double quotes, append a closing quote
+    if repaired2.count('"') % 2 == 1:
+        repaired2 = repaired2 + '"'
+    # Remove trailing commas before } or ]
+    repaired2 = re.sub(r",\s*}", "}", repaired2)
+    repaired2 = re.sub(r",\s*\]", "]", repaired2)
+
+    try:
+        return json.loads(repaired2)
+    except Exception as e5:
+        log.error(f"ai_presence_insights: final heuristic repair failed: {e5} | repaired2_content={repaired2!r}")
+
+    # Final fallback: auto_close_json
+    try:
+        repaired3 = auto_close_json(content)
+        result = json.loads(repaired3)
+        log.warning("ai_presence_insights: auto_close repair applied")
+        return result
+    except Exception as e6:
+        log.error(f"ai_presence_insights: auto_close_json fallback failed: {e6} | repaired3_content={repaired3!r}")
+
+        # If all parsing fails, raise error
+        raise HTTPException(502, f"OpenAI returned invalid JSON for insights: last error {e1}")
+
 def _local_insights_fallback(details: Dict[str, Any], prescore: Dict[str, Any], nearby: List[Dict[str, Any]], complaints: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Deterministic, on-box insights so the response is never empty."""
+    log.info("insights_fallback: generating deterministic insights payload")
+    partner_mode = _is_partner_restaurant(details)
     name = details.get("name") or "This restaurant"
     bid = details.get("id") or "unknown"
     rating = details.get("rating")
@@ -1788,7 +1934,7 @@ def _local_insights_fallback(details: Dict[str, Any], prescore: Dict[str, Any], 
         )
 
     # 6) Negative review signal (if any complaints provided)
-    if complaints:
+    if complaints and not partner_mode:
         c1 = complaints[0]
         add(
             "Address recent 1★ complaints",
@@ -2067,6 +2213,12 @@ async def google_nearby_restaurants(lat: Optional[float], lng: Optional[float], 
     NEARBY_CACHE.set(ck, out)
     return copy.deepcopy(out)
 
+def _presence_oneline_default(prescore: Dict[str, Any]) -> str:
+    reasons = prescore.get('reasons') or []
+    if reasons:
+        return f"Your online presence is slipping, {reasons[0].rstrip('.')}; let us fix it with a fast, modern site that converts more customers."
+    return "A stronger website and clearer information can win you more customers; let us help you upgrade quickly."
+
 async def google_textsearch_cuisine(
     *, lat: float, lng: float, cuisine: str, radius_m: int = 16093, limit: int = 50
 ) -> List[Dict[str, Any]]:
@@ -2124,7 +2276,7 @@ async def google_textsearch_cuisine(
     return copy.deepcopy(out)
 
 async def nearby_same_cuisine(
-    details: Dict[str, Any], *, radius_m: int = 16093, min_results: int = 7, scan_limit: int = 50, concurrency: int = 6
+    details: Dict[str, Any], *, radius_m: int = 16093, min_results: int = 7, scan_limit: int = 50, concurrency: int = 6, max_results: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """Return at least `min_results` nearby competitors with the same cuisine.
 
@@ -2149,44 +2301,48 @@ async def nearby_same_cuisine(
         dedup[pid] = {**it, "cuisine": base_cuisine}
 
     out = list(dedup.values())
+    target_len = max(min_results, max_results or 0)
 
-    if len(out) >= min_results:
-        return out[:min_results]
-
-    # Fallback: widen radius slightly, or inspect nearby and verify via details
-    if len(out) < min_results:
+    # Fallback: widen radius slightly, or inspect nearby and verify via details when we do not have enough yet
+    if len(out) < target_len:
         more = await google_nearby_restaurants(lat, lng, radius_m=min(25000, radius_m + 5000), limit=scan_limit)
 
-        sem = asyncio.Semaphore(concurrency)
+        if more:
+            sem = asyncio.Semaphore(concurrency)
 
-        async def fetch_and_match(item: Dict[str, Any]):
-            pid = item.get("id")
-            if not pid or pid == self_id or pid in dedup:
-                return None
-            async with sem:
-                try:
-                    norm = await google_details_normalized(pid, include_chain_info=False)
-                    if cuisine_from_types(norm) != base_cuisine:
-                        return None
-                    return {
-                        "id": norm.get("id"),
-                        "name": norm.get("name"),
-                        "rating": norm.get("rating"),
-                        "map_url": f"https://www.google.com/maps/place/?q=place_id:{norm.get('id')}" if norm.get("id") else None,
-                        "cuisine": base_cuisine,
-                    }
-                except Exception:
+            async def fetch_and_match(item: Dict[str, Any]):
+                pid = item.get("id")
+                if not pid or pid == self_id or pid in dedup:
                     return None
+                async with sem:
+                    try:
+                        norm = await google_details_normalized(pid, include_chain_info=False)
+                        if cuisine_from_types(norm) != base_cuisine:
+                            return None
+                        return {
+                            "id": norm.get("id"),
+                            "name": norm.get("name"),
+                            "rating": norm.get("rating"),
+                            "map_url": f"https://www.google.com/maps/place/?q=place_id:{norm.get('id')}" if norm.get("id") else None,
+                            "cuisine": base_cuisine,
+                        }
+                    except Exception:
+                        return None
 
-        tasks: List[asyncio.Task] = [asyncio.create_task(fetch_and_match(i)) for i in more]
-        for t in asyncio.as_completed(tasks):
-            res = await t
-            if res:
-                out.append(res)
-                if len(out) >= min_results:
-                    break
+            tasks = [asyncio.create_task(fetch_and_match(i)) for i in more]
+            results = await asyncio.gather(*tasks)
+            for res in results:
+                if not res:
+                    continue
+                pid = res.get("id")
+                if not pid or pid in dedup:
+                    continue
+                dedup[pid] = res
+            out = list(dedup.values())
 
-    return out[:min_results]
+    if max_results is not None:
+        return out[:max_results]
+    return out
   
 
 # Yelp fallback
@@ -2510,6 +2666,8 @@ async def insights_presence(
             y = await yelp_business_details(payload.place_id)
             details = normalize_details_yelp(y)
 
+    partner_mode = _is_partner_restaurant(details)
+
     # Keywords (payload may include a list, optional)
     kw_list = getattr(payload, "keywords", None) if hasattr(payload, "keywords") else None
     if isinstance(kw_list, list):
@@ -2520,26 +2678,72 @@ async def insights_presence(
     # Nearby (fetch as many as possible up to 60 within ~10 miles)
     nearby = await google_nearby_restaurants(details.get("lat"), details.get("lng"), radius_m=16093, limit=60)
 
-    # Reviews (EXACTLY 3, with keyword preference then fallbacks)
+    # Reviews (EXACTLY 3, adjust for partner locations)
     reviews_all = _filter_reviews(details)
-    complaints = select_negative_reviews(reviews_all, kw_list, limit=3)
-    log.info("presence/unified: selected %d negative reviews (limit=%d)", len(complaints), 3)
+    if partner_mode:
+        five_star_reviews = [rv for rv in reviews_all if int(rv.get("rating") or 0) >= 5]
+        if not five_star_reviews:
+            raw_reviews = details.get("reviews") or []
+            five_star_reviews = [rv for rv in raw_reviews if int(rv.get("rating") or 0) >= 5]
+        complaints = five_star_reviews[:3]
+        log.info(
+            "presence/unified: partner review override for %s -> %d five-star quotes",
+            details.get("name"),
+            len(complaints),
+        )
+        if not complaints:
+            complaints = select_negative_reviews(reviews_all, kw_list, limit=3)
+            log.warning(
+                "presence/unified: partner %s lacked 5★ reviews; fell back to %d negatives",
+                details.get("name"),
+                len(complaints),
+            )
+    else:
+        complaints = select_negative_reviews(reviews_all, kw_list, limit=3)
+        log.info("presence/unified: selected %d negative reviews (limit=%d)", len(complaints), 3)
 
     # Presence score (already includes recent 1★ keyword penalty if any)
     prescore = await compute_online_presence(details, keyword_list=kw_list or None, recent_days=90)
 
-    # One-line AI pitch + optional multi-insights
-    ai_line = await ai_presence_oneliner(details, prescore, complaints)
-    ai_multi = await ai_presence_insights(details, prescore, nearby, complaints)
-    if ai_multi is None:
-        ai_multi = _local_insights_fallback(details, prescore, nearby, complaints)
+    # Kick off OpenAI calls concurrently to minimise wall-clock latency
+    ai_line_task = asyncio.create_task(ai_presence_oneliner(details, prescore, complaints))
+    ai_multi_task = asyncio.create_task(ai_presence_insights(details, prescore, nearby, complaints))
 
-    # Nearby competitors with the same cuisine (target >=5 within ~5 miles)
+    # Nearby competitors with the same cuisine (target: all within ~3 miles)
     try:
-        same_cuisine = await nearby_same_cuisine(details, radius_m=8047, min_results=5, scan_limit=50, concurrency=6)
+        same_cuisine = await nearby_same_cuisine(
+            details,
+            radius_m=4828,
+            min_results=7,
+            scan_limit=60,
+            concurrency=6,
+            max_results=None,
+        )
     except Exception as e:
         log.warning("presence: same-cuisine nearby failed: %s", e)
         same_cuisine = []
+
+    ai_line_result, ai_multi_result = await asyncio.gather(ai_line_task, ai_multi_task, return_exceptions=True)
+
+    # Resolve oneline output with safe fallback
+    if isinstance(ai_line_result, Exception):
+        log.warning("presence: ai oneline failed: %s", ai_line_result)
+        ai_line = _presence_oneline_default(prescore)
+    else:
+        ai_line = ai_line_result
+
+    fallback_insights = _local_insights_fallback(details, prescore, nearby, complaints)
+    if isinstance(ai_multi_result, HTTPException):
+        raise ai_multi_result
+    if isinstance(ai_multi_result, Exception):
+        log.warning("presence: ai insights failed: %s; using fallback", ai_multi_result)
+        ai_multi = fallback_insights
+    else:
+        if ai_multi_result is None:
+            log.warning("presence: OpenAI insights timed out; using fallback")
+            ai_multi = fallback_insights
+        else:
+            ai_multi = ai_multi_result
 
     return {
         "id": details.get("id"),

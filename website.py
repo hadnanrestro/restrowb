@@ -121,10 +121,10 @@ async def build_html(details: Dict[str, Any], *, sales_cta: bool) -> Tuple[str, 
         experience_cta = "Planning something special? Ask about catering and private events when you visit."
 
     experience_tiles = [
-        {"icon": "⭐", "title": "Signature Plates", "desc": signature_copy, "tag": "Chef favorites"},
-        {"icon": "🛋️", "title": "Ambience", "desc": atmosphere_copy, "tag": "Atmosphere"},
-        {"icon": "📅", "title": "Good to Know", "desc": service_tip, "tag": "Today's scoop"},
-        {"icon": "🥂", "title": "Make It Memorable", "desc": experience_cta, "tag": "Plan ahead"},
+        {"icon": "<svg viewBox='0 0 48 48' fill='none'><rect width='48' height='48' rx='16' fill='url(#g1)'/><path d='M16 27l6 6 10-14' stroke='white' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/><defs><linearGradient id='g1' x1='6' y1='8' x2='42' y2='40' gradientUnits='userSpaceOnUse'><stop stop-color='{pal['primary']}'/><stop offset='1' stop-color='{pal['primary_dark']}'/></linearGradient></defs></svg>", "title": "Signature Plates", "desc": signature_copy, "tag": "Chef favorites"},
+        {"icon": "<svg viewBox='0 0 48 48' fill='none'><rect width='48' height='48' rx='16' fill='#f0ebe1'/><path d='M16 31c0-5 4-9 9-9s9 4 9 9' stroke='#a47a52' stroke-width='3' stroke-linecap='round'/><circle cx='25' cy='19' r='5' fill='#a47a52'/></svg>", "title": "Ambience", "desc": atmosphere_copy, "tag": "Atmosphere"},
+        {"icon": "<svg viewBox='0 0 48 48' fill='none'><rect width='48' height='48' rx='16' fill='#e9f2ff'/><path d='M16 18h16M16 24h16M16 30h10' stroke='#2b5ea6' stroke-width='3' stroke-linecap='round'/><circle cx='32' cy='30' r='3' fill='#2b5ea6'/></svg>", "title": "Good to Know", "desc": service_tip, "tag": "Today's scoop"},
+        {"icon": "<svg viewBox='0 0 48 48' fill='none'><rect width='48' height='48' rx='16' fill='#f7ecff'/><path d='M18 30l6-12 6 12' stroke='#7d4ab5' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><circle cx='24' cy='18' r='3' fill='#7d4ab5'/></svg>", "title": "Make It Memorable", "desc": experience_cta, "tag": "Plan ahead"},
     ]
 
     # Rest of the function remains the same...
@@ -175,8 +175,7 @@ tailwind.config = {{
 </script>
 <style>
   html,body{{background:linear-gradient(#FBF8F3,#F5F2ED) fixed; color:#1B1B1B; margin:0; min-height:100%;}}
-  .container-shell{{width:clamp(320px,94vw,2000px);margin:0 auto;padding-inline:clamp(1.5rem,4vw,5.5rem);}}
-  @media (min-width:1800px){{.container-shell{{width:clamp(320px,92vw,2200px);}}}}
+  .container-shell{{width:clamp(320px, min(100vw, 2200px), 2400px);margin:0 auto;padding-inline:clamp(1rem,2.6vw,4.2rem);}}
   .glass{{background:rgba(255,255,255,.55); backdrop-filter: blur(12px); border:1px solid rgba(0,0,0,.06);}}
   /* Enhanced button styles (subtle, elegant, non-invasive) */
   :root{{ --brand: {pal['primary']}; --brand-dark: {pal['primary_dark']}; }}
@@ -204,7 +203,7 @@ tailwind.config = {{
   .experience-card::after{{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(255,255,255,.0),rgba(255,255,255,.35));opacity:0;transition:opacity .25s ease;}}
   .experience-card:hover{{transform:translateY(-6px);box-shadow:0 28px 60px rgba(0,0,0,.14);}}
   .experience-card:hover::after{{opacity:1;}}
-  .experience-card .emoji{{display:inline-flex;align-items:center;justify-content:center;width:3.1rem;height:3.1rem;border-radius:1.1rem;background:linear-gradient(135deg,{pal['primary']}22,{pal['primary_dark']}33);font-size:1.55rem;box-shadow:0 12px 20px rgba(0,0,0,.1);}}
+  .experience-card .emoji{{display:inline-flex;align-items:center;justify-content:center;width:3.1rem;height:3.1rem;border-radius:1.1rem;background:linear-gradient(135deg,#f4f1eb,#e7e1d5);box-shadow:0 12px 20px rgba(0,0,0,.1);}}
   .experience-card .body{{margin-top:1.15rem;display:flex;flex-direction:column;gap:.55rem;}}
   .experience-card h3{{font-weight:600;font-size:1.14rem;letter-spacing:-0.01em;}}
   .experience-card p{{font-size:.97rem;line-height:1.62;opacity:.82;}}
@@ -219,7 +218,7 @@ tailwind.config = {{
 <body class="font-body">
 
   <header class="sticky top-0 z-50">
-    <nav class="{CONTAINER} py-3 flex items-center justify-between bg-white/80 backdrop-blur border-b border-black/5">
+    <nav class="{CONTAINER} py-3 flex items-center justify-between bg-gradient-to-r from-[rgba(255,255,255,0.94)] via-[rgba(249,244,238,0.92)] to-[rgba(255,255,255,0.88)] backdrop-blur border-b border-white/40 shadow-[0_8px_18px_rgba(0,0,0,0.06)]">
       <a class="flex items-center gap-3" href="#top" aria-label="{safe(name)}">
         {"<img src='"+safe(logo)+"' class='h-7 w-7 rounded object-contain' alt='logo'/>" if logo else ""}
         <span class="font-semibold tracking-wide">{safe(name)}</span>
@@ -280,7 +279,7 @@ tailwind.config = {{
         {"".join([
           f"""
           <article class='experience-card'>
-            <div class='emoji'>{safe(tile['icon'])}</div>
+            <div class='emoji'>{tile['icon']}</div>
             <div class='body'>
               <h3>{safe(tile['title'])}</h3>
               <p>{safe(tile['desc'])}</p>
@@ -406,7 +405,7 @@ tailwind.config = {{
         </div>
       </div>
       <div class="mt-6 text-center opacity-70">
-        <span>© {time.strftime("%Y")} {safe(name)} • Created by <strong>Restronaut.ai</strong></span>
+        <span>© {time.strftime("%Y")} {safe(name)} • Built with love by <strong>Restronaut.ai</strong></span>
       </div>
     </div>
   </section>
