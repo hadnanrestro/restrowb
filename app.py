@@ -1093,6 +1093,14 @@ def _is_partner_restaurant(details: Dict[str, Any]) -> bool:
 def cuisine_from_types(details: Dict[str, Any]) -> str:
     name = (details.get("name") or "").lower()
     types = [t.lower() for t in (details.get("categories") or [])]
+    tokens = set(_normalize_tokens(details.get("name") or ""))
+    type_tokens = {tok for t in types for tok in _normalize_tokens(t)}
+
+    cafeteria_tokens = {"cafeteria", "cafeterias", "buffet", "buffets"}
+    if tokens.intersection(cafeteria_tokens) or type_tokens.intersection(cafeteria_tokens):
+        return "american"
+    if "piccadilly" in tokens or {"k", "w"}.issubset(tokens):
+        return "american"
     
     # More comprehensive keyword matching
     cuisine_keywords = {
@@ -1134,7 +1142,7 @@ def cuisine_from_types(details: Dict[str, Any]) -> str:
         },
         "american": {
             "types": ["restaurant", "american_restaurant", "meal_takeaway"],
-            "name_keywords": ["american", "diner", "cafe", "american grill", "bar", "steakhouse", "bbq", "barbecue", "roadhouse", "wings"],
+            "name_keywords": ["american", "diner", "cafe", "cafeteria", "cafeterias", "american grill", "bar", "steakhouse", "bbq", "barbecue", "roadhouse", "wings", "southern", "comfort food", "piccadilly", "k&w"],
             "priority": 0
         }
     }
@@ -2283,8 +2291,28 @@ async def google_textsearch_cuisine(
             pid = r.get("place_id")
             name = r.get("name")
             rating = r.get("rating")
+            types = [t.lower() for t in (r.get("types") or [])]
+            # Filter out obvious non-restaurant matches (e.g., hotels/lodging)
+            allowed_type_tokens = {
+                "restaurant",
+                "meal_takeaway",
+                "meal_delivery",
+                "food",
+                "bakery",
+                "cafe",
+                "bar",
+                "night_club",
+            }
+            if types and not any(tok in allowed_type_tokens for tok in types):
+                continue
             map_url = f"https://www.google.com/maps/place/?q=place_id:{pid}" if pid else None
-            out.append({"id": pid, "name": name, "rating": rating, "map_url": map_url})
+            out.append({
+                "id": pid,
+                "name": name,
+                "rating": rating,
+                "map_url": map_url,
+                "types": types,
+            })
             if len(out) >= limit:
                 return out
         page_token = data.get("next_page_token")
@@ -2316,6 +2344,9 @@ async def nearby_same_cuisine(
     for it in text_hits:
         pid = it.get("id")
         if not pid or pid == self_id:
+            continue
+        types = {t for t in (it.get("types") or [])}
+        if types and not any(tok in {"restaurant", "meal_takeaway", "meal_delivery", "food", "cafe", "bakery"} for tok in types):
             continue
         dedup[pid] = {**it, "cuisine": base_cuisine}
 
