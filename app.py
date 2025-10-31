@@ -1055,6 +1055,76 @@ PARTNER_BRANDS: Tuple[Tuple[str, ...], ...] = (
     ("piccadilly", "cafeterias"),
 )
 
+DISALLOWED_COMPETITOR_TOKENS = {
+    "hotel",
+    "hotels",
+    "suite",
+    "suites",
+    "resort",
+    "resorts",
+    "inn",
+    "lodging",
+    "motel",
+    "motel",
+    "lodge",
+    "lodges",
+    "residence",
+    "residences",
+    "apartments",
+    "apartment",
+    "condo",
+    "condominiums",
+    "residency",
+    "car",
+    "auto",
+    "dealer",
+    "dealership",
+    "automotive",
+    "garage",
+    "repair",
+    "bank",
+    "atm",
+    "clinic",
+    "hospital",
+    "dental",
+    "dentist",
+    "orthodontist",
+    "pharmacy",
+    "pharmacies",
+    "school",
+    "college",
+    "university",
+    "church",
+    "temple",
+    "mosque",
+    "synagogue",
+    "barbershop",
+    "salon",
+    "spa",
+    "pet",
+    "grooming",
+    "store",
+    "shop",
+    "market",
+    "grocery",
+    "supermarket",
+    "hardware",
+    "gas",
+    "station",
+    "plaza",
+    "center",
+    "centre",
+    "mall",
+    "boutique",
+    "museum",
+    "gallery",
+    "theatre",
+    "theater",
+    "parking",
+    "garage",
+    "carwash",
+}
+
 
 def _normalize_tokens(value: str) -> List[str]:
     cleaned = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
@@ -1089,6 +1159,30 @@ def _is_partner_restaurant(details: Dict[str, Any]) -> bool:
         return True
 
     return False
+
+
+def _is_valid_restaurant_candidate(name: Optional[str], types: Iterable[str]) -> bool:
+    tokens = set(_normalize_tokens(name or ""))
+    norm_types = {t.lower() for t in types if t}
+    if norm_types and any(tok in {"lodging", "rv_park", "campground", "hotel", "inn", "motel"} for tok in norm_types):
+        return False
+    if tokens and tokens.intersection(DISALLOWED_COMPETITOR_TOKENS):
+        return False
+    allowed_type_tokens = {
+        "restaurant",
+        "meal_takeaway",
+        "meal_delivery",
+        "food",
+        "bakery",
+        "cafe",
+        "bar",
+        "night_club",
+        "diner",
+        "bbq",
+    }
+    if norm_types and not norm_types.intersection(allowed_type_tokens):
+        return False
+    return True
 
 def cuisine_from_types(details: Dict[str, Any]) -> str:
     name = (details.get("name") or "").lower()
@@ -2292,18 +2386,7 @@ async def google_textsearch_cuisine(
             name = r.get("name")
             rating = r.get("rating")
             types = [t.lower() for t in (r.get("types") or [])]
-            # Filter out obvious non-restaurant matches (e.g., hotels/lodging)
-            allowed_type_tokens = {
-                "restaurant",
-                "meal_takeaway",
-                "meal_delivery",
-                "food",
-                "bakery",
-                "cafe",
-                "bar",
-                "night_club",
-            }
-            if types and not any(tok in allowed_type_tokens for tok in types):
+            if not _is_valid_restaurant_candidate(name, types):
                 continue
             map_url = f"https://www.google.com/maps/place/?q=place_id:{pid}" if pid else None
             out.append({
@@ -2345,8 +2428,8 @@ async def nearby_same_cuisine(
         pid = it.get("id")
         if not pid or pid == self_id:
             continue
-        types = {t for t in (it.get("types") or [])}
-        if types and not any(tok in {"restaurant", "meal_takeaway", "meal_delivery", "food", "cafe", "bakery"} for tok in types):
+        types = it.get("types") or []
+        if not _is_valid_restaurant_candidate(it.get("name"), types):
             continue
         dedup[pid] = {**it, "cuisine": base_cuisine}
 
@@ -2367,6 +2450,9 @@ async def nearby_same_cuisine(
                 async with sem:
                     try:
                         norm = await google_details_normalized(pid, include_chain_info=False)
+                        norm_types = [t.lower() for t in (norm.get("categories") or [])]
+                        if not _is_valid_restaurant_candidate(norm.get("name"), norm_types):
+                            return None
                         if cuisine_from_types(norm) != base_cuisine:
                             return None
                         return {
