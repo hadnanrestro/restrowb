@@ -1066,9 +1066,28 @@ def _is_partner_restaurant(details: Dict[str, Any]) -> bool:
     tokens = set(_normalize_tokens(name))
     if not tokens:
         return False
+
+    if {"k", "w"}.issubset(tokens) and ("cafeteria" in tokens or "cafeterias" in tokens or "restaurant" in tokens):
+        return True
+    if "piccadilly" in tokens:
+        return True
     for pattern in PARTNER_BRANDS:
         if set(pattern).issubset(tokens):
             return True
+
+    # Check website domain hints
+    website = (details.get("website") or "").lower()
+    if website:
+        if "kwcafeterias" in website or "kwcafeteria" in website:
+            return True
+        if "piccadilly.com" in website or "piccadillyrestaurants" in website:
+            return True
+
+    # Fallback: brand info field if provided
+    brand = (details.get("brand") or details.get("brand_name") or "").lower()
+    if brand and ("k&w" in brand or "piccadilly" in brand):
+        return True
+
     return False
 
 def cuisine_from_types(details: Dict[str, Any]) -> str:
