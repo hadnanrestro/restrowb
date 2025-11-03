@@ -1,7 +1,7 @@
 # app.py
 import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging, json, mimetypes, copy
 from urllib.parse import urlparse, quote
-from typing import Optional, Literal, Dict, Any, List, Tuple, FrozenSet, Iterable
+from typing import Optional, Literal, Dict, Any, List, Tuple, FrozenSet, Iterable, Set
 from pathlib import Path
 from mobile import build_mobile_app_html
 from website import build_html
@@ -2107,11 +2107,30 @@ def normalize_suggest_google(preds: List[Dict[str, Any]]) -> List[Dict[str, Any]
     out = []
     for p in preds or []:
         fmt = p.get("structured_formatting") or {}
+        title = fmt.get("main_text") or (p.get("description") or "")
+        types = [t.lower() for t in (p.get("types") or [])]
+        if not _is_valid_restaurant_candidate(title, types):
+            continue
         out.append({
             "id": p.get("place_id"),
-            "title": fmt.get("main_text") or (p.get("description") or ""),
+            "title": title,
             "subtitle": fmt.get("secondary_text") or "",
             "provider": "google",
+        })
+    return out
+
+
+def normalize_suggest_textsearch(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for it in items or []:
+        title = it.get("name") or ""
+        if not _is_valid_restaurant_candidate(title, it.get("types") or []):
+            continue
+        out.append({
+            "id": it.get("id"),
+            "title": title,
+            "subtitle": it.get("address") or "",
+            "provider": "google_text",
         })
     return out
 
@@ -2404,6 +2423,53 @@ async def google_textsearch_cuisine(
         await asyncio.sleep(2.1)
     TEXTSEARCH_CACHE.set(ck, out)
     return copy.deepcopy(out)
+
+
+async def google_textsearch_query(
+    *, query: str, lat: Optional[float], lng: Optional[float], radius_m: int = 16093, limit: int = 20
+) -> List[Dict[str, Any]]:
+    """General text search constrained to restaurant-like places."""
+    if not GOOGLE_API_KEY or not query:
+        return []
+
+    params = {
+        "query": query,
+        "type": "restaurant",
+        "radius": str(max(500, min(radius_m, 50000))),
+        "key": GOOGLE_API_KEY,
+    }
+    if lat is not None and lng is not None:
+        params["location"] = f"{lat},{lng}"
+
+    out: List[Dict[str, Any]] = []
+    page_token: Optional[str] = None
+    while True:
+        if page_token:
+            params["pagetoken"] = page_token
+        data = await http_get_json("https://maps.googleapis.com/maps/api/place/textsearch/json", params=params)
+        results = data.get("results") or []
+        for r in results:
+            pid = r.get("place_id")
+            name = r.get("name")
+            types = [t.lower() for t in (r.get("types") or [])]
+            if not _is_valid_restaurant_candidate(name, types):
+                continue
+            map_url = f"https://www.google.com/maps/place/?q=place_id:{pid}" if pid else None
+            out.append({
+                "id": pid,
+                "name": name,
+                "rating": r.get("rating"),
+                "map_url": map_url,
+                "types": types,
+                "address": r.get("formatted_address"),
+            })
+            if len(out) >= limit:
+                return out
+        page_token = data.get("next_page_token")
+        if not page_token:
+            break
+        await asyncio.sleep(2.1)
+    return out
 
 async def nearby_same_cuisine(
     details: Dict[str, Any], *, radius_m: int = 16093, min_results: int = 7, scan_limit: int = 50, concurrency: int = 6, max_results: Optional[int] = None
@@ -2741,16 +2807,47 @@ async def suggest(
         return cached
 
     gdata = await google_autocomplete(q, lat=lat, lng=lng, radius_m=radius_m, country=country)
-    g_results = normalize_suggest_google((gdata or {}).get("predictions", [])[:limit])
+    g_results = normalize_suggest_google((gdata or {}).get("predictions", [])[:limit * 2])
 
-    if not g_results and YELP_API_KEY:
+    suggestions: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+    for item in g_results:
+        pid = item.get("id")
+        if pid and pid in seen_ids:
+            continue
+        suggestions.append(item)
+        if pid:
+            seen_ids.add(pid)
+        if len(suggestions) >= limit:
+            break
+
+    if len(suggestions) < limit:
+        text_hits = await google_textsearch_query(
+            query=q,
+            lat=lat,
+            lng=lng,
+            radius_m=radius_m,
+            limit=limit * 2,
+        )
+        text_suggestions = normalize_suggest_textsearch(text_hits)
+        for item in text_suggestions:
+            pid = item.get("id")
+            if pid and pid in seen_ids:
+                continue
+            suggestions.append(item)
+            if pid:
+                seen_ids.add(pid)
+            if len(suggestions) >= limit:
+                break
+
+    if not suggestions and YELP_API_KEY:
         ydata = await yelp_autocomplete(q, lat=lat, lng=lng, limit=limit)
         y_results = normalize_suggest_yelp(ydata)
         result = {"results": y_results}
         SUGGEST_CACHE.set(key, result)
         return result
 
-    result = {"results": g_results}
+    result = {"results": suggestions[:limit]}
     SUGGEST_CACHE.set(key, result)
     return result
 
