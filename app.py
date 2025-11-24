@@ -1,5 +1,5 @@
 # app.py
-import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging, json, mimetypes, copy
+import os, re, time, json, hashlib, base64, io, hmac, asyncio, logging, json, mimetypes, copy, math
 from urllib.parse import urlparse, quote
 from typing import Optional, Literal, Dict, Any, List, Tuple, FrozenSet, Iterable, Set
 from pathlib import Path
@@ -2314,6 +2314,15 @@ async def google_nearby_chain_count(name: str, lat: Optional[float], lng: Option
     CHAIN_COUNT_CACHE.set(ck, count)
     return count
 
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Return approximate distance in meters between two lat/lng pairs."""
+    r = 6371000.0  # Earth radius in meters
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
 async def google_nearby_restaurants(lat: Optional[float], lng: Optional[float], *, radius_m: int = 16093, limit: int = 60) -> List[Dict[str, Any]]:
     """List nearby restaurants within radius_m (~10 miles) with basic info.
     Paginates through Google Nearby Search to return up to `limit` results.
@@ -2340,16 +2349,49 @@ async def google_nearby_restaurants(lat: Optional[float], lng: Optional[float], 
         for r in results:
             pid = r.get("place_id")
             name = r.get("name")
-            rating = r.get("rating")
+            types = r.get("types") or []
+            if "restaurant" not in types:
+                continue
+            status = (r.get("business_status") or "").upper()
+            if status and status != "OPERATIONAL":
+                continue
+            loc = (r.get("geometry") or {}).get("location") or {}
+            r_lat = loc.get("lat")
+            r_lng = loc.get("lng")
+            distance_m = None
+            if r_lat is not None and r_lng is not None:
+                distance_m = _haversine_m(lat, lng, float(r_lat), float(r_lng))
+
+            photos = r.get("photos") or []
+            photo_ref = photos[0].get("photo_reference") if photos and isinstance(photos[0], dict) else None
+            photo_url = build_google_photo_url(photo_ref, maxwidth=1200) if photo_ref else None
+
             map_url = f"https://www.google.com/maps/place/?q=place_id:{pid}" if pid else None
-            out.append({"id": pid, "name": name, "rating": rating, "map_url": map_url})
+            out.append({
+                "id": pid,
+                "name": name,
+                "rating": r.get("rating"),
+                "user_ratings_total": r.get("user_ratings_total"),
+                "price_level": r.get("price_level"),
+                "address": r.get("vicinity") or r.get("formatted_address"),
+                "types": types,
+                "map_url": map_url,
+                "lat": r_lat,
+                "lng": r_lng,
+                "distance_m": distance_m,
+                "photo_url": photo_url,
+                "open_now": (r.get("opening_hours") or {}).get("open_now"),
+            })
             if len(out) >= limit:
-                return out
+                NEARBY_CACHE.set(ck, out)
+                return copy.deepcopy(out)
         page_token = data.get("next_page_token")
         if not page_token:
             break
         # Google requires a short delay before using next_page_token
         await asyncio.sleep(2.1)
+    if out:
+        out.sort(key=lambda item: (item.get("distance_m") is None, item.get("distance_m") or 0.0))
     NEARBY_CACHE.set(ck, out)
     return copy.deepcopy(out)
 
@@ -2646,33 +2688,6 @@ class TemplateOut(BaseModel):
     meta: Dict[str, Any]
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Mobile App Builder Endpoint (always uses v3)
-# ────────────────────────────────────────────────────────────────────────────
-@app.post("/generate/mobile", response_model=TemplateOut)
-async def generate_mobile(
-    payload: GeneratePayload,
-    request: Request,
-    _rl = Depends(rate_limit),
-    _sec = Depends(security_guard)
-):
-    # Fetch details (using existing helper; keeps behavior consistent)
-    details = await _fetch_details(payload.provider, payload.place_id, payload.details)
-
-    # Always use the new mobile app builder and make caching/cdn debugging easy
-    log.info("generate/mobile: using build_mobile_app_html (v3) for %s", details.get("name"))
-    html, meta = await build_mobile_app_html(details)
-
-    # Add a visible build stamp in the HTML to confirm version and cache state
-    stamp = f"<!-- MOBILE_BUILDER=v3 no-hero-circle bg=hardcoded-svg ts={int(time.time())} -->"
-    if "</head>" in html:
-        html = html.replace("</head>", stamp + "\n</head>")
-    else:
-        html = stamp + html
-
-    return {"html": html, "meta": meta}
-
-
 def best_logo(details: Dict[str, Any]) -> Tuple[Optional[str], str]:
     # Build a scored candidate list from debug and simple candidates
     cands_dbg = details.get("logo_debug") or []  # (url, score, reason)
@@ -2741,6 +2756,7 @@ async def root():
             "/healthz",
             "/health/openai",
             "/suggest",
+            "/nearby/restaurants",
             "/details",
             "/generate/template",
             "/insights/presence",
@@ -2850,6 +2866,21 @@ async def suggest(
     result = {"results": suggestions[:limit]}
     SUGGEST_CACHE.set(key, result)
     return result
+
+@app.get("/nearby/restaurants", summary="Restaurants near the provided lat/lng (Google Places)")
+async def nearby_restaurants(
+    request: Request,
+    lat: float = Query(..., ge=-90.0, le=90.0),
+    lng: float = Query(..., ge=-180.0, le=180.0),
+    radius_m: int = Query(8000, ge=500, le=50000, description="Search radius in meters"),
+    limit: int = Query(15, ge=1, le=50),
+    _: None = Depends(rate_limit),
+    __: None = Depends(security_guard),
+):
+    if not GOOGLE_API_KEY:
+        raise HTTPException(500, "Server misconfigured: missing GOOGLE_PLACES_API_KEY")
+    results = await google_nearby_restaurants(lat, lng, radius_m=radius_m, limit=limit)
+    return {"results": results}
 
 @app.get("/insights/negative-reviews", summary="Fetch up to 3 low-rated reviews, preferring website/app complaints")
 async def insights_negative_reviews(
