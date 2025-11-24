@@ -3108,8 +3108,8 @@ async def generate_mobile_template(
         raise HTTPException(500, "Failed to fetch details")
 
     try:
-        # Force the endpoint to always use the pinned v3 builder, even if another build_mobile_app_html is defined later
-        html, meta = await build_mobile_app_html_v3(details)
+        # Use the primary mobile builder
+        html, meta = await build_mobile_app_html(details)
         return TemplateOut(html=html, react=None, meta=meta)
     except Exception as e:
         log.error(f"mobile_template build failed: {e}")
